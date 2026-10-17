@@ -1,4 +1,4 @@
-"""VidGen Data Package: Curation, Manifests, Moving MNIST, Dataset, Buckets, Precomputation."""
+"""VidGen Data Package: Curation, Manifests, Moving MNIST, Datasets, Buckets, Precomputation."""
 
 from vidgen.data.manifest import (
     MANIFEST_COLUMNS,
@@ -25,9 +25,22 @@ from vidgen.data.curation import (
     run_stage7_statistics,
     run_curation_pipeline_end_to_end,
 )
-from vidgen.data.dataset import CuratedVideoDataset
-from vidgen.data.buckets import AspectRatioBucketSampler
-from vidgen.data.precompute import precompute_latents_and_embeddings
+from vidgen.data.buckets import (
+    BucketSpec,
+    get_standard_buckets,
+    find_nearest_bucket,
+    DistributedBucketSampler,
+)
+from vidgen.data.dataset import (
+    AdvancedVideoDataset,
+    decode_video_pyav,
+    decode_media_fallback,
+)
+from vidgen.data.precompute import (
+    ChannelStatsAccumulator,
+    run_precompute_pipeline,
+    PrecomputedLatentDataset,
+)
 
 __all__ = [
     "MANIFEST_COLUMNS",
@@ -51,7 +64,14 @@ __all__ = [
     "run_stage6_captioning",
     "run_stage7_statistics",
     "run_curation_pipeline_end_to_end",
-    "CuratedVideoDataset",
-    "AspectRatioBucketSampler",
-    "precompute_latents_and_embeddings",
+    "BucketSpec",
+    "get_standard_buckets",
+    "find_nearest_bucket",
+    "DistributedBucketSampler",
+    "AdvancedVideoDataset",
+    "decode_video_pyav",
+    "decode_media_fallback",
+    "ChannelStatsAccumulator",
+    "run_precompute_pipeline",
+    "PrecomputedLatentDataset",
 ]

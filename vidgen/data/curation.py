@@ -461,7 +461,12 @@ def run_curation_pipeline_end_to_end(
                 is_image=is_image,
             )
 
-        meta["path"] = f"clips/{clip_id}.npy"
+        clips_dir = output_dir / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        clip_path = clips_dir / f"{clip_id}.npy"
+        np.save(clip_path, video_arr)
+
+        meta["path"] = str(clip_path)
         records.append(meta)
         video_data_dict[clip_id] = video_arr
 

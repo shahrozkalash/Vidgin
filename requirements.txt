@@ -8,3 +8,4 @@ einops>=0.7.0
 safetensors>=0.4.0
 pandas>=2.0.0
 pyarrow>=14.0.0
+av>=11.0.0
