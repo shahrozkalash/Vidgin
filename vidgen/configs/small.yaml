@@ -1,0 +1,61 @@
+# VidGen Configuration: Small Preset (~270M params)
+# 256x256 resolution, 33 frames (T=4k+1, k=8), latent [B, 16, 9, 32, 32], 2,304 spacetime tokens
+track: "A"
+name: "small"
+seed: 42
+
+system:
+  device: "auto"         # auto-detects cuda, falls back to cpu
+  dtype: "bfloat16"      # falls back to float32 on cpu
+  use_flash_attn: false
+  enable_tf32: true
+
+vae:
+  in_channels: 3
+  latent_channels: 16
+  base_channels: 64
+  channel_multipliers: [1, 2, 4, 4]
+  temporal_downsamples: 2  # 4x temporal downsample: 33 -> 9
+  spatial_downsamples: 3   # 8x spatial downsample: 256 -> 32
+
+patchify:
+  patch_size: [1, 2, 2]
+  in_channels: 16
+
+model:
+  num_layers: 16
+  hidden_dim: 1024
+  num_heads: 16            # head_dim = 64
+  ffn_dim: 4096            # 4x hidden_dim
+  text_dim: 1024
+  rope_theta: 10000.0
+  dropout: 0.0
+
+training:
+  batch_size: 4
+  micro_batch_size: 2
+  gradient_accumulation_steps: 2
+  learning_rate: 8.0e-5
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  max_grad_norm: 1.0
+  total_steps: 50000
+  warmup_steps: 500
+  save_every: 2500
+  eval_every: 250
+  ema_decay: 0.9999
+  output_dir: "./checkpoints/small"
+  tracker: "tensorboard"
+
+data:
+  frames: 33              # T = 4*8 + 1
+  height: 256
+  width: 256
+  fps: 16
+  text_seq_len: 64
+
+sampler:
+  method: "euler"
+  num_steps: 30
+  guidance_scale: 6.0

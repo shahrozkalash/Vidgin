@@ -1,0 +1,61 @@
+# VidGen Configuration: Wan 1.3B Preset (~1.3 Billion params)
+# 480x832 resolution, 81 frames (T=4k+1, k=20), latent [B, 16, 21, 60, 104], 32,760 spacetime tokens
+track: "A"
+name: "wan1p3b"
+seed: 42
+
+system:
+  device: "auto"
+  dtype: "bfloat16"
+  use_flash_attn: true
+  enable_tf32: true
+
+vae:
+  in_channels: 3
+  latent_channels: 16
+  base_channels: 128
+  channel_multipliers: [1, 2, 4, 4]
+  temporal_downsamples: 2  # 4x temporal downsample: 81 -> 21
+  spatial_downsamples: 3   # 8x spatial downsample: 480x832 -> 60x104
+
+patchify:
+  patch_size: [1, 2, 2]
+  in_channels: 16
+
+model:
+  num_layers: 30
+  hidden_dim: 1536
+  num_heads: 12            # head_dim = 128
+  ffn_dim: 8960            # Wan 1.3B ratio
+  text_dim: 4096           # UMT5 / T5-XXL embedding dim
+  rope_theta: 10000.0
+  dropout: 0.0
+
+training:
+  batch_size: 16
+  micro_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  max_grad_norm: 1.0
+  total_steps: 200000
+  warmup_steps: 1000
+  save_every: 5000
+  eval_every: 500
+  ema_decay: 0.9999
+  output_dir: "./checkpoints/wan1p3b"
+  tracker: "tensorboard"
+
+data:
+  frames: 81              # T = 4*20 + 1
+  height: 480
+  width: 832
+  fps: 16
+  text_seq_len: 256
+
+sampler:
+  method: "euler"
+  num_steps: 40
+  guidance_scale: 7.5

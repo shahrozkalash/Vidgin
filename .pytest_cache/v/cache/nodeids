@@ -1,0 +1,21 @@
+[
+  "tests/test_checkpoint.py::test_checkpoint_reproducibility_next_step_loss",
+  "tests/test_checkpoint.py::test_gpu_checkpoint_save_and_resume",
+  "tests/test_config.py::test_config_roundtrip",
+  "tests/test_config.py::test_device_agnostic_resolution",
+  "tests/test_config.py::test_frame_rule_validation",
+  "tests/test_config.py::test_gpu_config_resolution",
+  "tests/test_config.py::test_small_preset_dimensions",
+  "tests/test_config.py::test_tiny_config_loading",
+  "tests/test_config.py::test_wan_480p_preset_dimensions",
+  "tests/test_data_curation.py::test_bucket_sampler",
+  "tests/test_data_curation.py::test_curated_video_dataset",
+  "tests/test_data_curation.py::test_end_to_end_1000_clips_acceptance",
+  "tests/test_data_curation.py::test_manifest_schema_and_io",
+  "tests/test_data_curation.py::test_moving_mnist_generation",
+  "tests/test_data_curation.py::test_quality_and_signal_filters",
+  "tests/test_logging.py::test_structured_logger",
+  "tests/test_seed.py::test_gpu_seed_determinism",
+  "tests/test_seed.py::test_seed_everything_determinism",
+  "tests/test_seed.py::test_seed_everything_divergence"
+]
