@@ -29,7 +29,7 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips |
 | `vidgen/data/clips.py` | Part 1 | `FolderClipDataset`: reads a prepared directory (`manifest.jsonl` + uint8 `(T,H,W,3)` `.npy` clips); yields the exact Moving MNIST sample format; deterministic manifest-order indexing; `max_clips` cap |
 | `vidgen/sample.py` | Part 8 | Sample a clip from a DiT checkpoint → VAE decode → `.npy` (+ PNG/GIF if Pillow installed) |
-| `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pexels API via `PEXELS_API_KEY` env var, or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
+| `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pixabay API via `PIXABAY_API_KEY` env var — recommended, free key issued instantly; Pexels API via `PEXELS_API_KEY` — only if you already have a key, since Pexels has paused issuing new ones; or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
 | `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
 | `requirements.txt` | — | `torch`, `numpy`, `pytest` (CPU index for torch; Pillow optional) — no new deps (prep script is stdlib + torch/numpy; decoders preinstalled on Colab) |
 | `tests/` | — | 49 tests mirroring the README's CPU suite (see below), incl. real-clip dataset + prep helpers |
@@ -137,14 +137,16 @@ tensor, str caption)` — so both trainers consume either dataset.
 **Prepare (Colab).** Open
 [`notebooks/prepare_clips_drive.ipynb`](notebooks/prepare_clips_drive.ipynb):
 it mounts Drive, clones the repo, and runs `scripts/prepare_clips.py`, which
-downloads stock videos (Pexels API — key via the notebook's `getpass` prompt,
+downloads stock videos (Pixabay API — key via the notebook's `getpass` prompt
+(Pixabay is the default: its free key is issued instantly after signup; Pexels
+has paused issuing new API keys, so it only works if you already have one —
 never hardcoded — or `--source urls` with a list of direct video URLs, no key),
 then per video: download to a temp dir (cleaned after each video) → decode
 (cv2, else imageio) → center 17-frame window at even stride → center-crop to
 square → resize to 64×64 → skip too-short / corrupt / too-dark / near-static
 clips (reusing `vidgen/data/filters.py` quality gates) → dedupe by content
-hash → write `<id>.npy` + manifest line with a caption (Pexels: the search
-query; URL lists: a caption derived from the file name). It prints
+hash → write `<id>.npy` + manifest line with a caption (Pixabay: the hit's
+tags; Pexels: the search query; URL lists: a caption derived from the file name). It prints
 downloaded/kept/skipped counts and total MB at the end. The notebook's
 defaults collect the **"City and people"** theme: six queries × 500 videos
 (≈3,000 clips, ~600 MB) into `MyDrive/vidgin-data/tiny-clips/`.

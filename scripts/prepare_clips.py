@@ -6,7 +6,13 @@ then for each video: download -> decode -> center 17-frame temporal window ->
 center-crop to square -> resize to 64x64 -> quality/dedupe filters ->
 <uint8 (T,H,W,3) .npy> + one line in manifest.jsonl with a caption.
 
-Usage (Pexels, "City and people" theme):
+Usage (Pixabay, "City and people" theme — recommended: free key issued instantly):
+  export PIXABAY_API_KEY=...   # free key shown right after signup at https://pixabay.com/api/docs/
+  python scripts/prepare_clips.py --source pixabay \\
+      --queries "people walking city street,crowd crossing street,city traffic aerial" \\
+      --per-query 500 --out /content/drive/MyDrive/vidgin-data/tiny-clips
+
+Usage (Pexels; only if you already have a key — Pexels has paused issuing new ones):
   export PEXELS_API_KEY=...   # free key from https://www.pexels.com/api/
   python scripts/prepare_clips.py --source pexels \\
       --queries "people walking city street,crowd crossing street,city traffic aerial" \\
@@ -18,8 +24,8 @@ Usage (no API key — direct video file URLs, one per line):
 
 Downloads live in a temp dir that is cleaned after every video, so disk use
 stays small (only the finished .npy clips + manifest accumulate in --out).
-The API key is read from the PEXELS_API_KEY environment variable only: it is
-never hardcoded and never printed.
+The API key is read from the PIXABAY_API_KEY (or PEXELS_API_KEY) environment
+variable only: it is never hardcoded and never printed.
 """
 
 from __future__ import annotations
@@ -47,6 +53,9 @@ from vidgen.data.filters import passes_quality
 
 PEXELS_SEARCH_URL = "https://api.pexels.com/videos/search"
 PEXELS_PER_PAGE = 80  # API maximum
+PIXABAY_SEARCH_URL = "https://pixabay.com/api/videos/"
+PIXABAY_PER_PAGE = 200  # API maximum (totalHits is capped at 500 per query)
+PIXABAY_REQUEST_SLEEP = 0.35  # keep well under the 100 requests/60s rate limit
 TIMEOUT = 60
 MIN_WIDTH = 480  # prefer the smallest video file at least this wide
 MEAN_BRIGHTNESS_MIN = 25.0  # 0-255 scale; below this the clip is "too dark"
@@ -214,6 +223,84 @@ def collect_pexels(api_key: str, queries: list[str], per_query: int) -> list[tup
     return items
 
 
+def choose_pixabay_video_file(videos: dict) -> dict | None:
+    """Pick a cheap variant to download: prefer medium, else large, else small.
+
+    We downscale to 64x64 anyway, so the smallest variant that is at least
+    256px wide wins; if none is, take the first available variant in
+    preference order. Mirrors choose_video_file.
+    """
+    for name in ("medium", "large", "small"):
+        v = videos.get(name)
+        if v and v.get("url") and (v.get("width") or 0) >= 256:
+            return v
+    for name in ("medium", "large", "small"):
+        v = videos.get(name)
+        if v and v.get("url"):
+            return v
+    return None
+
+
+def pixabay_caption(hit: dict, query: str) -> str:
+    """Pixabay hits carry comma-separated tags; caption = first few tags,
+    falling back to the search query (mirrors pexels_caption)."""
+    tags = [t.strip() for t in str(hit.get("tags", "")).split(",") if t.strip()]
+    if tags:
+        return ", ".join(tags[:6])
+    return query.strip() or "stock video clip"
+
+
+def pixabay_search(api_key: str, query: str, per_page: int, page: int) -> dict:
+    """One page of Pixabay video search results (returns the raw payload)."""
+    params = urllib.parse.urlencode(
+        {"key": api_key, "q": query, "per_page": per_page, "page": page}
+    )
+    req = urllib.request.Request(
+        f"{PIXABAY_SEARCH_URL}?{params}",
+        headers={"User-Agent": "vidgin-prepare/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:200]
+        raise RuntimeError(f"Pixabay API error {e.code}: {body}") from e
+
+
+def collect_pixabay(api_key: str, queries: list[str], per_query: int) -> list[tuple[str, str]]:
+    """Return [(download_url, caption)] across all queries, paginating.
+
+    The API caps totalHits at 500 per query; collect up to per_query items,
+    stopping early when pages are exhausted. Only a handful of requests per
+    query, spaced by PIXABAY_REQUEST_SLEEP.
+    """
+    items: list[tuple[str, str]] = []
+    for query in queries:
+        got = 0
+        page = 1
+        while got < per_query:
+            want = min(PIXABAY_PER_PAGE, per_query - got)
+            payload = pixabay_search(api_key, query, want, page)
+            hits = payload.get("hits", [])
+            if page == 1:
+                print(f"  query {query!r}: {payload.get('totalHits', '?')} total hits on Pixabay", flush=True)
+            if not hits:
+                break
+            for h in hits:
+                f = choose_pixabay_video_file(h.get("videos", {}))
+                if f and f.get("url"):
+                    items.append((f["url"], pixabay_caption(h, query)))
+                    got += 1
+                    if got >= per_query:
+                        break
+            if len(hits) < want:
+                break  # last page
+            page += 1
+            time.sleep(PIXABAY_REQUEST_SLEEP)
+        print(f"  query {query!r}: {got} videos found", flush=True)
+    return items
+
+
 # ------------------------------------------------------------ clip building
 def build_clip(frames: np.ndarray, n_frames: int, size: int) -> tuple[np.ndarray | None, str | None]:
     """frames (N,H,W,3) uint8 -> (clip (T,H,W,3) uint8, None) or (None, reason)."""
@@ -243,11 +330,14 @@ def build_clip(frames: np.ndarray, n_frames: int, size: int) -> tuple[np.ndarray
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Download stock videos and prepare a FolderClipDataset directory.")
-    ap.add_argument("--source", choices=["pexels", "urls"], required=True,
-                    help="pexels: Pexels API (needs PEXELS_API_KEY env var); "
+    ap.add_argument("--source", choices=["pexels", "pixabay", "urls"], required=True,
+                    help="pexels: Pexels API (needs PEXELS_API_KEY env var — "
+                         "Pexels has paused issuing new keys); "
+                         "pixabay: Pixabay API (needs PIXABAY_API_KEY env var — "
+                         "free key issued instantly at https://pixabay.com/api/docs/); "
                          "urls: one direct video-file URL per line in --urls-file")
     ap.add_argument("--queries", default="",
-                    help="comma-separated Pexels search phrases (with --source pexels)")
+                    help="comma-separated search phrases (with --source pexels/pixabay)")
     ap.add_argument("--per-query", type=int, default=250,
                     help="videos to fetch per query (with --source pexels)")
     ap.add_argument("--urls-file", default=None,
@@ -266,25 +356,37 @@ def main() -> None:
         sys.exit(f"error: --size must be a multiple of 16, got {args.size}")
 
     if args.source == "pexels":
-        api_key = os.environ.get("PEXELS_API_KEY")
+        env_var, api_name, signup = "PEXELS_API_KEY", "Pexels", "https://www.pexels.com/api/"
+    elif args.source == "pixabay":
+        env_var, api_name, signup = "PIXABAY_API_KEY", "Pixabay", "https://pixabay.com/api/docs/"
+    if args.source in ("pexels", "pixabay"):
+        api_key = os.environ.get(env_var)
         if not api_key:
+            extra = ""
+            if args.source == "pexels":
+                extra = ("\nNOTE: Pexels has paused issuing new API keys. If you don't "
+                         "already have one, use --source pixabay instead —\n"
+                         "its free key is issued instantly at https://pixabay.com/api/docs/.\n")
             print(
-                "error: PEXELS_API_KEY is not set.\n\n"
-                "Get a free API key (no card required):\n"
-                "  1. Sign up at https://www.pexels.com/api/\n"
-                "  2. Copy your key from the dashboard\n"
-                "  3. In this terminal run:  export PEXELS_API_KEY=<your key>\n"
-                "     In Colab, use the notebook's getpass cell instead —\n"
-                "     never paste the key into chat or the notebook text.\n\n"
+                f"error: {env_var} is not set.\n\n"
+                f"Get a free API key (no card required):\n"
+                f"  1. Sign up at {signup}\n"
+                f"  2. Copy your key from the dashboard/docs page\n"
+                f"  3. In this terminal run:  export {env_var}=<your key>\n"
+                f"     In Colab, use the notebook's getpass cell instead —\n"
+                f"     never paste the key into chat or the notebook text.\n"
+                f"{extra}\n"
                 "Or use --source urls with a list of direct video URLs (no key).",
                 file=sys.stderr,
             )
             sys.exit(2)
         queries = [q.strip() for q in args.queries.split(",") if q.strip()]
         if not queries:
-            sys.exit("error: --queries is required with --source pexels")
-        print(f"collecting up to {args.per_query} videos per query from Pexels ...")
-        items = collect_pexels(api_key, queries, args.per_query)
+            sys.exit(f"error: --queries is required with --source {args.source}")
+        print(f"collecting up to {args.per_query} videos per query from {api_name} ...")
+        items = (collect_pexels(api_key, queries, args.per_query)
+                 if args.source == "pexels"
+                 else collect_pixabay(api_key, queries, args.per_query))
     else:
         if not args.urls_file or not os.path.isfile(args.urls_file):
             sys.exit(f"error: --urls-file not found: {args.urls_file}")

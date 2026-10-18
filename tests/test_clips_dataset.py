@@ -13,6 +13,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
+import prepare_clips
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.train import DiTTrainer
@@ -22,9 +23,11 @@ from prepare_clips import (
     build_clip,
     caption_from_filename,
     center_crop_square,
+    choose_pixabay_video_file,
     choose_video_file,
     content_hash,
     pexels_caption,
+    pixabay_caption,
     resize_nearest,
     select_frame_indices,
 )
@@ -152,6 +155,59 @@ def test_choose_video_file():
 def test_pexels_caption():
     assert pexels_caption({"id": 1}, "crowd crossing street") == "crowd crossing street"
     assert pexels_caption({}, "") == "stock video clip"
+
+
+def test_choose_pixabay_video_file():
+    variants = {
+        "large": {"url": "L", "width": 1920, "height": 1080},
+        "medium": {"url": "M", "width": 1280, "height": 720},
+        "small": {"url": "S", "width": 640, "height": 360},
+        "tiny": {"url": "T", "width": 320, "height": 240},
+    }
+    assert choose_pixabay_video_file(variants)["url"] == "M"  # medium preferred
+    no_medium = {k: v for k, v in variants.items() if k != "medium"}
+    assert choose_pixabay_video_file(no_medium)["url"] == "L"  # ...else large
+    only_small = {"small": {"url": "S", "width": 640, "height": 360}}
+    assert choose_pixabay_video_file(only_small)["url"] == "S"  # ...else small
+    # below 256px wide and not in the (medium, large, small) preference order:
+    # tiny is never tried, so an all-tiny dict yields None
+    tiny_only = {"tiny": {"url": "T", "width": 200, "height": 120}}
+    assert choose_pixabay_video_file(tiny_only) is None
+    assert choose_pixabay_video_file({}) is None
+    assert choose_pixabay_video_file({"medium": {"url": "", "width": 1280}}) is None
+
+
+def test_pixabay_caption():
+    hit = {"id": 42, "tags": "city, people, crowd, street, traffic, urban, night, lights"}
+    assert pixabay_caption(hit, "crowd crossing street") == \
+        "city, people, crowd, street, traffic, urban"
+    assert pixabay_caption({"tags": ""}, "crowd crossing street") == "crowd crossing street"
+    assert pixabay_caption({}, "") == "stock video clip"
+
+
+def test_collect_pixabay_pagination(monkeypatch):
+    """Mocked pagination: full page 1, partial page 2 ends collection."""
+    seen = []
+
+    def fake_search(api_key, query, per_page, page):
+        assert api_key == "KEY"
+        seen.append((query, per_page, page))
+        n = per_page if page == 1 else 1  # page 1 full -> continue; page 2 partial -> stop
+        return {
+            "totalHits": per_page + 1,
+            "hits": [
+                {"id": page * 1000 + i, "tags": "city, night",
+                 "videos": {"medium": {"url": f"u{page}{i}", "width": 1280}}}
+                for i in range(n)
+            ],
+        }
+
+    monkeypatch.setattr(prepare_clips, "pixabay_search", fake_search)
+    monkeypatch.setattr(prepare_clips.time, "sleep", lambda s: None)
+    items = prepare_clips.collect_pixabay("KEY", ["city street"], per_query=500)
+    assert seen == [("city street", 200, 1), ("city street", 200, 2)]
+    assert len(items) == 201
+    assert items[0] == ("u10", "city, night")
 
 
 def _moving_gradient(n=60, s=96):
