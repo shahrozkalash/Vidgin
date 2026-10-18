@@ -97,6 +97,43 @@ class ChunkContinuityConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """
+    Long-Term Memory and Feedback Loop Configuration (Batch 1).
+    All feature flags default to OFF (False / 0).
+    """
+    # Master toggles (default False)
+    enable_memory_store: bool = False
+    enable_episodic_memory: bool = False
+
+    # Store paths and limits
+    store_dir: str = ".vidgen_memory"
+    max_retrieved_references: int = 3
+    similarity_threshold: float = 0.40
+    merge_cosine_threshold: float = 0.95
+
+    # Episodic memory budget for long-video generation beyond sliding window
+    episodic_budget_chunks: int = 1
+    episodic_budget_tokens: int = 64
+    embedding_dim: int = 64
+
+
+@dataclass
+class FeedbackConfig:
+    """
+    Feedback Collection and Rating Hygiene Configuration.
+    All feature flags default to OFF (False).
+    """
+    enable_feedback_logging: bool = False
+    log_path: str = "feedback.jsonl"
+    pairs_log_path: str = "feedback_pairs.jsonl"
+    consent_given: bool = False  # Privacy safeguard: no personal data stored without consent
+    anonymize_rater: bool = True
+    min_time_spent_seconds: float = 0.5  # Filter out rapid bot/speedrun clicks
+    monotony_threshold: float = 0.95     # Flag raters with >= 95% identical choices over >= 5 ratings
+
+
+@dataclass
 class LongVideoConfig:
     """
     Complete Part 13 30-Second Video Generation Configuration.
@@ -108,6 +145,8 @@ class LongVideoConfig:
     preset: PresetConfig = field(default_factory=lambda: TINY_PRESET)
     continuity: ChunkContinuityConfig = field(default_factory=ChunkContinuityConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
 
     # Architectural parameters
     anchor_frames: int = 2
@@ -157,6 +196,10 @@ class LongVideoConfig:
             "enable_decoupled_attention": self.attention.enable_decoupled_attention,
             "hybrid_full_attn_interval": self.attention.hybrid_full_attn_interval,
             "temporal_window_size": self.attention.temporal_window_size,
+            "enable_memory_store": self.memory.enable_memory_store,
+            "enable_episodic_memory": self.memory.enable_episodic_memory,
+            "max_retrieved_references": self.memory.max_retrieved_references,
+            "enable_feedback_logging": self.feedback.enable_feedback_logging,
         }
 
 
@@ -188,4 +231,5 @@ class ConditioningTrainingConfig:
     prob_first_n_frames: float = 0.20   # Video extension (first N frames conditioned)
     extension_n_frames: int = 4         # N latent frames for extension training
     loss_non_conditioned_only: bool = True
+
 

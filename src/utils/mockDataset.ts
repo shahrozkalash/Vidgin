@@ -1,4 +1,4 @@
-import { VideoClip, BucketSpec } from '../types/vidgen';
+import { VideoClip, BucketSpec, PresetKey } from '../types/vidgen';
 import { getStandardBuckets, findNearestBucket } from './bucketEngine';
 
 export const SAMPLE_CAPTIONS = [
@@ -59,7 +59,7 @@ export const SAMPLE_CAPTIONS = [
   },
 ];
 
-export function generateSampleClips(count: number = 40, preset: 'tiny' | 'small' | 'wan480p' | 'wan14b' = 'tiny', imageRatio: number = 0.2): VideoClip[] {
+export function generateSampleClips(count: number = 40, preset: PresetKey = 'tiny', imageRatio: number = 0.2): VideoClip[] {
   const buckets = getStandardBuckets(preset);
   const clips: VideoClip[] = [];
 

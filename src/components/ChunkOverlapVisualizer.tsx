@@ -23,7 +23,7 @@ interface ChunkOverlapVisualizerProps {
 }
 
 export const ChunkOverlapVisualizer: React.FC<ChunkOverlapVisualizerProps> = ({
-  currentPreset = 'vidgen480p',
+  currentPreset = 'wan480p',
 }) => {
   // Active seam selector: 0 = 5s (Frame 80), 1 = 10s (Frame 160), 2 = 15s (Frame 240), 3 = 20s (Frame 320), 4 = 25s (Frame 400)
   const [activeSeamIndex, setActiveSeamIndex] = useState<number>(0);

@@ -87,7 +87,7 @@ export const MemoryTracker: React.FC<MemoryTrackerProps> = ({ currentPreset = 'w
     } else if (selectedPreset === 'small') {
       weights = 1.20;
       spatialMultiplier = 0.16;
-    } else if (selectedPreset === 'wan14b') {
+    } else if (selectedPreset === 'wan14b' || selectedPreset === 'vidgen14b') {
       weights = 28.0;
       spatialMultiplier = 2.30;
     }

@@ -82,6 +82,28 @@ export const DIT_PRESET_CONFIGS: Record<PresetKey, DiTBlockConfig> = {
     inChannels: 16,
     outChannels: 16,
   },
+  vidgen480p: {
+    numLayers: 30,
+    hiddenDim: 1536,
+    numHeads: 12,
+    headDim: 128,
+    ffnDim: 8960,
+    textDim: 4096,
+    patchSize: [1, 2, 2],
+    inChannels: 16,
+    outChannels: 16,
+  },
+  vidgen14b: {
+    numLayers: 40,
+    hiddenDim: 5120,
+    numHeads: 40,
+    headDim: 128,
+    ffnDim: 13824,
+    textDim: 4096,
+    patchSize: [1, 2, 2],
+    inChannels: 16,
+    outChannels: 16,
+  },
 };
 
 /**
@@ -137,6 +159,8 @@ export function calculateDiTParameters(cfg: DiTBlockConfig, presetKey: PresetKey
     small: { label: '~270M', count: 270_000_000 },
     wan480p: { label: '~1.3B', count: 1_350_000_000 },
     wan14b: { label: '~14B', count: 14_000_000_000 },
+    vidgen480p: { label: '~1.3B', count: 1_350_000_000 },
+    vidgen14b: { label: '~14B', count: 14_000_000_000 },
   };
 
   const nom = nominals[presetKey];

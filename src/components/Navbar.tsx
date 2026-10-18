@@ -1,138 +1,162 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { PresetKey } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
-import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles, Server, Award, Zap, Target, Film, HardDrive, Scissors } from 'lucide-react';
+import { Video, Menu, X } from 'lucide-react';
 
 interface NavbarProps {
   currentPreset: PresetKey;
   onPresetChange: (preset: PresetKey) => void;
-  activeTab: string;
-  onTabChange: (tab: string) => void;
+  activeSection: string;
+  onSectionChange: (section: string) => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentPreset,
   onPresetChange,
-  activeTab,
-  onTabChange,
+  activeSection,
+  onSectionChange,
 }) => {
-  const preset = PRESETS[currentPreset];
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const navItems = [
-    { id: 'long_video_30s', label: '30-Second Video (Part 13)', icon: Film, badge: '481f & Flat O(1)' },
-    { id: 'memory_tracker', label: 'Memory Tracker O(1)', icon: HardDrive, badge: 'Constant VRAM' },
-    { id: 'overlap_visualizer', label: '1-Latent Overlap', icon: Scissors, badge: 'Seam Continuity' },
-    { id: 'targeted_improvements', label: 'Beating Vidgen (Part 12)', icon: Target, badge: 'Targeted Gains' },
-    { id: 'extensions_studio', label: 'Post-Training & Extensions (Part 11)', icon: Zap, badge: 'LoRA, I2V, Experts' },
-    { id: 'evaluation_vbench', label: 'Evaluation & VBench (Part 10)', icon: Award, badge: 'VBench & A/B' },
-    { id: 'scaling_efficiency', label: 'Scaling & Efficiency (Part 9)', icon: Server, badge: 'FSDP2 & Ulysses' },
-    { id: 'sampler_pipeline', label: 'Sampler & Inference (Part 8)', icon: Sparkles, badge: 'Prompt → MP4' },
-    { id: 'dit_backbone', label: 'DiT Backbone (Part 6)', icon: Cpu, badge: 'Full 3D adaLN-Zero' },
-    { id: 'text_conditioner', label: 'Text Conditioner (Part 5)', icon: FileText, badge: 'umT5 Rewriter' },
-    { id: 'patchify_rope', label: 'Patchifier & 3D RoPE (Part 4)', icon: Grid, badge: '32,760 Tokens' },
-    { id: 'vae', label: 'Video VAE (Part 3)', icon: Layers, badge: '4x8x8 16-Ch' },
-    { id: 'batch_inspector', label: 'Visual Batch Dump', icon: PlayCircle, badge: 'Acceptance' },
-    { id: 'bucketing', label: 'Spacetime Bucketing', icon: Layers, badge: '5 Ratios' },
-    { id: 'sampler', label: 'Distributed Sampler', icon: Cpu, badge: 'Resumable' },
-    { id: 'precompute', label: 'Precompute & Latents', icon: Database, badge: '16-Ch fp16' },
-    { id: 'throughput', label: 'Throughput Benchmark', icon: Activity, badge: '>50 clips/s' },
-    { id: 'specs_tests', label: 'Specs & Test Suite', icon: CheckCircle2, badge: 'All Parts' },
+  const sections = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'presets', label: 'Presets' },
+    { id: 'long_video', label: 'Long video' },
+    { id: 'try_it', label: 'Try it' },
   ];
 
+  const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen14b'];
+
+  const handleNavClick = (id: string) => {
+    onSectionChange(id);
+    setMobileMenuOpen(false);
+  };
+
   return (
-    <header className="border-b border-slate-800 bg-slate-950/90 backdrop-blur sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo & Branding */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-sky-600 to-cyan-400 p-0.5 shadow-lg shadow-indigo-500/20">
-              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Video className="w-5 h-5 text-indigo-400" />
+    <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80">
+      <div className="max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16 gap-3">
+          {/* Logo & Brand Name 'vidgen' */}
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              onClick={() => handleNavClick('overview')}
+              className="flex items-center gap-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-lg p-1 min-h-[44px]"
+              aria-label="vidgen home"
+            >
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-sky-500 to-cyan-400 p-0.5 shadow-md shadow-cyan-500/10 shrink-0">
+                <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+                  <Video className="w-4 h-4 text-cyan-400" />
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold tracking-tight text-white text-base">VidGen Studio</span>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
-                  Part 13 Active
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-bold tracking-tight text-white text-xl lowercase font-sans">
+                  vidgen
                 </span>
-                <span className="px-1.5 py-0.2 text-[10px] font-mono rounded bg-slate-800 text-slate-300">
-                  30-Second Video (481f, 16 FPS)
-                </span>
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block mb-1" />
               </div>
-              <p className="text-xs text-slate-400 hidden sm:block">
-                Causal Chunked KV Cache • RoPE Re-indexing • Flat O(1) Memory • Timeline Prompt Planner • Streaming Causal VAE
-              </p>
-            </div>
+            </button>
           </div>
 
-          {/* Preset Selector */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
-              <Sliders className="w-3.5 h-3.5 text-slate-400 ml-1.5 hidden md:block" />
-              {(['tiny', 'small', 'vidgen480p', 'vidgen14b'] as PresetKey[]).map((pKey) => {
-                const isSelected = currentPreset === pKey;
+          {/* Desktop Navigation Links (Centered / Calm) */}
+          <nav className="hidden md:flex items-center gap-1" aria-label="Main navigation">
+            {sections.map((sec) => {
+              const isActive = activeSection === sec.id;
+              return (
+                <button
+                  key={sec.id}
+                  onClick={() => handleNavClick(sec.id)}
+                  className={`min-h-[44px] px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+                    isActive
+                      ? 'bg-slate-900 text-cyan-300 font-semibold border border-slate-800 shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-900/60'
+                  }`}
+                >
+                  {sec.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Preset Selector & Mobile Menu Button */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Mobile Preset Selector (Native Dropdown for perfect touch & zero overflow) */}
+            <div className="block sm:hidden">
+              <label htmlFor="mobile-preset-select" className="sr-only">
+                Select Model Preset
+              </label>
+              <select
+                id="mobile-preset-select"
+                value={currentPreset}
+                onChange={(e) => onPresetChange(e.target.value as PresetKey)}
+                className="min-h-[44px] bg-slate-900 border border-slate-800 text-xs font-medium text-slate-200 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+              >
+                {presetKeys.map((pk) => {
+                  const cfg = PRESETS[pk] || PRESETS.tiny;
+                  return (
+                    <option key={pk} value={pk}>
+                      {cfg.name} ({cfg.params})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* Tablet/Desktop Preset Pills (Flex-wrap safe) */}
+            <div className="hidden sm:flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
+              {presetKeys.map((pk) => {
+                const isSelected = currentPreset === pk;
+                const cfg = PRESETS[pk] || PRESETS.tiny;
                 return (
                   <button
-                    key={pKey}
-                    onClick={() => onPresetChange(pKey)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
+                    key={pk}
+                    onClick={() => onPresetChange(pk)}
+                    className={`min-h-[36px] px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
                       isSelected
-                        ? 'bg-cyan-500 text-slate-950 font-bold shadow-md shadow-cyan-500/20'
-                        : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                        ? 'bg-cyan-400 text-slate-950 font-bold shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                     }`}
                   >
-                    {PRESETS[pKey].name}
+                    {cfg.name}
                   </button>
                 );
               })}
             </div>
 
-            {/* Quick Vidgen Verification Badges */}
-            <div className="hidden lg:flex items-center gap-2">
-              <div className="text-[11px] font-mono bg-slate-900 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-emerald-400 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                T = 4k + 1 ({preset.baseFrames}f)
-              </div>
-              <div className="text-[11px] font-mono bg-slate-900 border border-sky-500/30 px-2 py-1 rounded-lg text-sky-400">
-                (H,W)%16==0
-              </div>
-            </div>
+            {/* Mobile Hamburger / Menu Button (Touch Target >= 44px) */}
+            <button
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileMenuOpen}
+              className="md:hidden min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900 border border-slate-800/80 flex items-center justify-center transition-colors"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5 text-slate-300" /> : <Menu className="w-5 h-5 text-slate-300" />}
+            </button>
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex overflow-x-auto space-x-1 py-1.5 no-scrollbar border-t border-slate-800/60">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => onTabChange(item.id)}
-                className={`flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg whitespace-nowrap transition-all ${
-                  isActive
-                    ? 'bg-slate-800 text-cyan-400 shadow-sm border border-slate-700/80'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
-                }`}
-              >
-                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-cyan-400' : 'text-slate-500'}`} />
-                <span>{item.label}</span>
-                {item.badge && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+        {/* Mobile Dropdown Menu */}
+        {mobileMenuOpen && (
+          <div className="md:hidden py-3 px-2 border-t border-slate-800/80 bg-slate-950/98 animate-in fade-in slide-in-from-top-2 duration-150">
+            <nav className="flex flex-col space-y-1" aria-label="Mobile navigation">
+              {sections.map((sec) => {
+                const isActive = activeSection === sec.id;
+                return (
+                  <button
+                    key={sec.id}
+                    onClick={() => handleNavClick(sec.id)}
+                    className={`min-h-[44px] w-full text-left px-4 py-2.5 rounded-xl text-base font-medium transition-colors ${
                       isActive
-                        ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20'
-                        : 'bg-slate-800/80 text-slate-400'
+                        ? 'bg-slate-900 text-cyan-300 font-semibold border border-slate-800'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-900/50'
                     }`}
                   >
-                    {item.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+                    {sec.label}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        )}
       </div>
     </header>
   );

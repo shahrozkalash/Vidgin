@@ -23,7 +23,7 @@ export function calculatePatchTokens(
   const gridW = Math.floor(latentW / pw);
 
   const totalTokens = gridT * gridH * gridW;
-  const isWan480pTarget = frames === 81 && height === 480 && width === 832 && totalTokens === 32760;
+  const isTarget = frames === 81 && height === 480 && width === 832 && totalTokens === 32760;
 
   return {
     frames,
@@ -37,7 +37,8 @@ export function calculatePatchTokens(
     gridH,
     gridW,
     totalTokens,
-    isWan480pTarget,
+    isVidgen480pTarget: isTarget,
+    isWan480pTarget: isTarget,
   };
 }
 

@@ -1,5 +1,5 @@
 /**
- * Types and interfaces for VidGen Wan Video Latent Diffusion Studio
+ * Types and interfaces for VidGen Video Latent Diffusion Studio
  */
 
 export interface BucketSpec {
@@ -12,7 +12,7 @@ export interface BucketSpec {
   tokens: number; // After 4x temporal, 8x spatial, (1, 2, 2) patchify
 }
 
-export type PresetKey = 'tiny' | 'small' | 'wan480p' | 'wan14b';
+export type PresetKey = 'tiny' | 'small' | 'vidgen480p' | 'vidgen14b' | 'wan480p' | 'wan14b';
 
 export interface PresetConfig {
   key: PresetKey;
@@ -127,7 +127,8 @@ export interface PatchifyCalcResult {
   gridH: number;
   gridW: number;
   totalTokens: number;
-  isWan480pTarget: boolean;
+  isVidgen480pTarget: boolean;
+  isWan480pTarget?: boolean;
 }
 
 export interface RoPEPartitionSpec {

@@ -51,7 +51,7 @@ export function calculateLongVideoSpecs(
   } else if (presetKey === 'small') {
     height = 256;
     width = 256;
-  } else if (presetKey === 'wan14b') {
+  } else if (presetKey === 'wan14b' || presetKey === 'vidgen14b') {
     height = 720;
     width = 1280;
   }
@@ -90,7 +90,7 @@ export function calculateLongVideoSpecs(
   let fullAttnVramGb = 0;
   let chunkedKvVramGb = 0;
 
-  if (presetKey === 'wan480p') {
+  if (presetKey === 'wan480p' || presetKey === 'vidgen480p') {
     // 188,760 tokens full attention would require >140 GB VRAM
     fullAttnVramGb = 142.5;
     // Chunked KV cache with 1 window chunk + 2 anchors: fits comfortably in ~18.5 GB VRAM
