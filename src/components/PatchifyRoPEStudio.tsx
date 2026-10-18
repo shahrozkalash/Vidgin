@@ -360,7 +360,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
               </div>
 
               {/* Acceptance Spec Card for 480p 81-frame preset */}
-              {tokenResult.isVidgen480pTarget && (
+              {tokenResult.isWan480pTarget && (
                 <div className="p-3.5 bg-emerald-950/40 border border-emerald-500/50 rounded-xl flex items-start gap-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                   <div className="text-xs text-emerald-200">

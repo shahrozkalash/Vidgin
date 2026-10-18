@@ -45,7 +45,7 @@ interface ChunkMemorySample {
   unEvictedLeakGb: number;
 }
 
-export const MemoryTracker: React.FC<MemoryTrackerProps> = ({ currentPreset = 'vidgen480p' }) => {
+export const MemoryTracker: React.FC<MemoryTrackerProps> = ({ currentPreset = 'wan480p' }) => {
   const [selectedPreset, setSelectedPreset] = useState<PresetKey>(currentPreset);
   const [targetDuration, setTargetDuration] = useState<number>(30); // 5 to 120s
   const [fps, setFps] = useState<number>(16);
@@ -87,7 +87,7 @@ export const MemoryTracker: React.FC<MemoryTrackerProps> = ({ currentPreset = 'v
     } else if (selectedPreset === 'small') {
       weights = 1.20;
       spatialMultiplier = 0.16;
-    } else if (selectedPreset === 'vidgen14b') {
+    } else if (selectedPreset === 'wan14b') {
       weights = 28.0;
       spatialMultiplier = 2.30;
     }
@@ -668,7 +668,7 @@ export const MemoryTracker: React.FC<MemoryTrackerProps> = ({ currentPreset = 'v
                 <span className="font-mono font-bold text-cyan-400">{PRESETS[selectedPreset]?.name}</span>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
-                {(['tiny', 'small', 'vidgen480p', 'vidgen14b'] as PresetKey[]).map((pKey) => (
+                {(['tiny', 'small', 'wan480p', 'wan14b'] as PresetKey[]).map((pKey) => (
                   <button
                     key={pKey}
                     onClick={() => setSelectedPreset(pKey)}

@@ -9,6 +9,28 @@ from typing import Dict, Any, Optional, Tuple
 
 
 @dataclass
+class AttentionConfig:
+    """
+    Seedance Idea 1: Decoupled Spatial/Temporal & Hybrid Attention Configuration.
+    CRITICAL: Every new improvement feature defaults to OFF (False / "full").
+    """
+    # Attention mode: "full" (default baseline), "decoupled", or "hybrid"
+    attention_mode: str = "full"
+    # In hybrid mode: execute a full-attention layer every N layers
+    hybrid_full_attn_interval: int = 4
+    # Configurable temporal attention window size (None = attend over entire chunk/sequence)
+    temporal_window_size: Optional[int] = None
+    # Explicit toggle flag defaulting to False (OFF)
+    enable_decoupled_attention: bool = False
+    # Separate Q/K/V weights for visual and text tokens in spatial attention
+    separate_text_qkv: bool = True
+    # Visual tokens attend to text tokens in spatial layer
+    spatial_attend_text: bool = True
+    # Temporal attention runs on visual tokens only
+    temporal_visual_only: bool = True
+
+
+@dataclass
 class PresetConfig:
     """Model architecture preset configuration."""
     name: str = "tiny"
@@ -21,6 +43,7 @@ class PresetConfig:
     vae_stride: Tuple[int, int, int] = (4, 8, 8)   # (t, h, w)
     default_height: int = 64
     default_width: int = 64
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
 
 
 TINY_PRESET = PresetConfig(
@@ -84,6 +107,7 @@ class LongVideoConfig:
     chunk_duration_seconds: float = 5.0
     preset: PresetConfig = field(default_factory=lambda: TINY_PRESET)
     continuity: ChunkContinuityConfig = field(default_factory=ChunkContinuityConfig)
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
 
     # Architectural parameters
     anchor_frames: int = 2
@@ -129,6 +153,10 @@ class LongVideoConfig:
             "enable_rope_reindexing": self.continuity.enable_rope_reindexing,
             "enable_motion_carryover": self.continuity.enable_motion_carryover,
             "motion_carryover_frames": self.continuity.motion_carryover_frames,
+            "attention_mode": self.attention.attention_mode,
+            "enable_decoupled_attention": self.attention.enable_decoupled_attention,
+            "hybrid_full_attn_interval": self.attention.hybrid_full_attn_interval,
+            "temporal_window_size": self.attention.temporal_window_size,
         }
 
 
