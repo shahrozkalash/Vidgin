@@ -17,6 +17,8 @@ import { EvaluationStudio } from './components/EvaluationStudio';
 import { ExtensionStudio } from './components/ExtensionStudio';
 import { ImprovementStudio } from './components/ImprovementStudio';
 import { LongVideoStudio } from './components/LongVideoStudio';
+import { MemoryTracker } from './components/MemoryTracker';
+import { ChunkOverlapVisualizer } from './components/ChunkOverlapVisualizer';
 
 export default function App() {
   const [currentPreset, setCurrentPreset] = useState<PresetKey>('tiny');
@@ -36,6 +38,14 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {activeTab === 'long_video_30s' && (
           <LongVideoStudio currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'memory_tracker' && (
+          <MemoryTracker currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'overlap_visualizer' && (
+          <ChunkOverlapVisualizer currentPreset={currentPreset} />
         )}
 
         {activeTab === 'targeted_improvements' && (

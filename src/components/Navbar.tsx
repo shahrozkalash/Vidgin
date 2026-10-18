@@ -1,7 +1,7 @@
 import React from 'react';
 import { PresetKey } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
-import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles, Server, Award, Zap, Target, Film } from 'lucide-react';
+import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles, Server, Award, Zap, Target, Film, HardDrive, Scissors } from 'lucide-react';
 
 interface NavbarProps {
   currentPreset: PresetKey;
@@ -20,6 +20,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const navItems = [
     { id: 'long_video_30s', label: '30-Second Video (Part 13)', icon: Film, badge: '481f & Flat O(1)' },
+    { id: 'memory_tracker', label: 'Memory Tracker O(1)', icon: HardDrive, badge: 'Constant VRAM' },
+    { id: 'overlap_visualizer', label: '1-Latent Overlap', icon: Scissors, badge: 'Seam Continuity' },
     { id: 'targeted_improvements', label: 'Beating Vidgen (Part 12)', icon: Target, badge: 'Targeted Gains' },
     { id: 'extensions_studio', label: 'Post-Training & Extensions (Part 11)', icon: Zap, badge: 'LoRA, I2V, Experts' },
     { id: 'evaluation_vbench', label: 'Evaluation & VBench (Part 10)', icon: Award, badge: 'VBench & A/B' },

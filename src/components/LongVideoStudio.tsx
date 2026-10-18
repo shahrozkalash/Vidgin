@@ -33,6 +33,8 @@ import {
   evaluateLongVideoDiagnostics,
   runLongVideoCPUAcceptanceTests,
 } from '../utils/longVideoEngine';
+import { MemoryTracker } from './MemoryTracker';
+import { ChunkOverlapVisualizer } from './ChunkOverlapVisualizer';
 
 interface LongVideoStudioProps {
   currentPreset: PresetKey;
@@ -46,6 +48,8 @@ type SubTab =
   | 'data_bucketing'
   | 'timeline_text'
   | 'streaming_sampler'
+  | 'memory_tracker'
+  | 'overlap_visualizer'
   | 'diagnostics'
   | 'acceptance_tests';
 
@@ -204,6 +208,8 @@ export const LongVideoStudio: React.FC<LongVideoStudioProps> = ({ currentPreset 
             { id: 'data_bucketing', label: '13.4 Long-Clip Data Track' },
             { id: 'timeline_text', label: '13.5 Text Over Time & Planner' },
             { id: 'streaming_sampler', label: '13.6 Streaming Sampler Sim' },
+            { id: 'memory_tracker', label: '13.6b MemoryTracker: O(1) Profiler' },
+            { id: 'overlap_visualizer', label: '13.1c 1-Latent Overlap Visualizer' },
             { id: 'diagnostics', label: '13.7 Evaluations & Drift' },
             { id: 'acceptance_tests', label: '13.8 Specs & Tests (CPU Now)' },
           ].map((tab) => {
@@ -1249,6 +1255,16 @@ for chunk_idx in range(num_chunks):
             </div>
           </div>
         </div>
+      )}
+
+      {/* SUBTAB 13.6b: MEMORY TRACKER O(1) PROFILER */}
+      {activeSubTab === 'memory_tracker' && (
+        <MemoryTracker currentPreset={currentPreset} />
+      )}
+
+      {/* SUBTAB 13.1c: 1-LATENT OVERLAP VISUALIZER */}
+      {activeSubTab === 'overlap_visualizer' && (
+        <ChunkOverlapVisualizer currentPreset={currentPreset} />
       )}
 
       {/* SUBTAB 13.7: DIAGNOSTICS & DRIFT EVALUATION */}
