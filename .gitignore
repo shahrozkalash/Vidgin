@@ -6,3 +6,16 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Training artifacts (kept locally)
+checkpoints/
+checkpoints_smoke/
+outputs/
+*.pt
+*.npy

@@ -1,0 +1,15 @@
+# Vidgin PyTorch track (Track A / Tiny)
+#
+# CPU-only install (recommended for smoke tests / dev):
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
+#
+# GPU install (Kaggle/Colab T4 or any CUDA machine):
+#   pip install -r requirements.txt
+#
+# Pillow is optional (sample.py writes PNG/GIF when it is importable):
+#   pip install pillow
+
+torch
+numpy
+pytest
