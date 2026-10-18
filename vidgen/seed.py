@@ -28,15 +28,20 @@ def seed_everything(seed: int, num_threads: int = 2) -> int:
 
 
 def get_rng_states() -> dict:
-    """Snapshot all RNG states for checkpointing."""
+    """Snapshot all RNG states for checkpointing.
+
+    CUDA RNG states are stored as CPU tensors so saved checkpoints are
+    device-portable (a checkpoint saved on a GPU machine must load cleanly
+    on a CPU-only machine).
+    """
     import numpy as np
     import torch
 
     return {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-        "torch_cuda": torch.cuda.get_rng_state_all()
+        "torch": torch.get_rng_state().cpu(),
+        "torch_cuda": [s.cpu() for s in torch.cuda.get_rng_state_all()]
         if torch.cuda.is_available()
         else None,
     }
@@ -50,5 +55,11 @@ def set_rng_states(state: dict) -> None:
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
     torch.set_rng_state(state["torch"])
-    if state.get("torch_cuda") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["torch_cuda"])
+    cuda_states = state.get("torch_cuda")
+    if cuda_states is not None and torch.cuda.is_available():
+        # get_rng_state_all() returns one state per device id, in order;
+        # states were stored on CPU for portability, so move each back to
+        # its own device before restoring.
+        torch.cuda.set_rng_state_all(
+            [s.to(f"cuda:{i}") for i, s in enumerate(cuda_states)]
+        )
