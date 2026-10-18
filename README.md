@@ -1,6 +1,6 @@
-# VidGen: Wan-Style Latent Diffusion Text-to-Video Engine
+# VidGen: Vidgen-Style Latent Diffusion Text-to-Video Engine
 
-A modular, clean-room PyTorch implementation of a Wan-style video diffusion model:
+A modular, clean-room PyTorch implementation of a Vidgen-style video diffusion model:
 - **Causal 3D VAE**: Spatio-temporal compression (4x temporal, 8x spatial) with strictly causal temporal receptive field.
 - **3D Spacetime Patchify**: Spacetime patches projected to transformer token sequence.
 - **DiT Backbone**: Full 3D attention with 3D RoPE (partitioned across time, height, width) and text cross-attention.
@@ -19,8 +19,8 @@ A modular, clean-room PyTorch implementation of a Wan-style video diffusion mode
 |---|---|---|---|---|---|---|---|
 | **Tiny** | 64x64 | 17 ($k=4$) | $5 \times 8 \times 8$ | $(1, 2, 2)$ | **80** | 8 / 384 / 6 / 1536 | ~20M |
 | **Small** | 256x256 | 33 ($k=8$) | $9 \times 32 \times 32$ | $(1, 2, 2)$ | **2,304** | 16 / 1024 / 16 / 4096 | ~270M |
-| **Wan 480p** | 480x832 | 81 ($k=20$) | $21 \times 60 \times 104$ | $(1, 2, 2)$ | **32,760** | 30 / 1536 / 12 / 8960 | ~1.3B |
-| **Wan 14B** | 720x1280 | 81 ($k=20$) | $21 \times 90 \times 160$ | $(1, 2, 2)$ | **75,600** | 40 / 5120 / 40 / 13824 | ~14B |
+| **Vidgen 480p** | 480x832 | 81 ($k=20$) | $21 \times 60 \times 104$ | $(1, 2, 2)$ | **32,760** | 30 / 1536 / 12 / 8960 | ~1.3B |
+| **Vidgen 14B** | 720x1280 | 81 ($k=20$) | $21 \times 90 \times 160$ | $(1, 2, 2)$ | **75,600** | 40 / 5120 / 40 / 13824 | ~14B |
 
 ---
 
@@ -32,7 +32,7 @@ A modular, clean-room PyTorch implementation of a Wan-style video diffusion mode
   * **Panda-70M / Koala-36M**: Large-scale curated video-text pairs.
   * *(WebVid-10M is avoided due to stock video scraping takedown & copyright restrictions).*
 * **Stock & Licensed Footage**: Pexels / Pixabay API integration with terms permitting AI model training.
-* **Image-Text Pairs**: Integrated alongside video clips ($T=1$ repeated temporally). Wan jointly trains on images and videos to learn appearance textures cheaply.
+* **Image-Text Pairs**: Integrated alongside video clips ($T=1$ repeated temporally). Vidgen jointly trains on images and videos to learn appearance textures cheaply.
 * **Track A Synthetic Moving MNIST**: Moving MNIST generator with controllable digit trajectories, speeds, letterboxed black borders, blurs, static clips, and near-duplicates.
 
 ### 2. 7 Resumable Parquet Pipeline Stages
@@ -68,7 +68,7 @@ tests/test_checkpoint.py::test_checkpoint_reproducibility_next_step_loss PASSED 
 tests/test_checkpoint.py::test_gpu_checkpoint_save_and_resume SKIPPED    [ 10%]
 tests/test_config.py::test_tiny_config_loading PASSED                    [ 15%]
 tests/test_config.py::test_small_preset_dimensions PASSED                [ 21%]
-tests/test_config.py::test_wan_480p_preset_dimensions PASSED             [ 26%]
+tests/test_config.py::test_vidgen_480p_preset_dimensions PASSED             [ 26%]
 tests/test_config.py::test_device_agnostic_resolution PASSED             [ 31%]
 tests/test_config.py::test_frame_rule_validation PASSED                  [ 36%]
 tests/test_config.py::test_config_roundtrip PASSED                       [ 42%]

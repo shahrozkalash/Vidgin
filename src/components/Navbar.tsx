@@ -20,7 +20,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const navItems = [
     { id: 'long_video_30s', label: '30-Second Video (Part 13)', icon: Film, badge: '481f & Flat O(1)' },
-    { id: 'targeted_improvements', label: 'Beating Wan (Part 12)', icon: Target, badge: 'Targeted Gains' },
+    { id: 'targeted_improvements', label: 'Beating Vidgen (Part 12)', icon: Target, badge: 'Targeted Gains' },
     { id: 'extensions_studio', label: 'Post-Training & Extensions (Part 11)', icon: Zap, badge: 'LoRA, I2V, Experts' },
     { id: 'evaluation_vbench', label: 'Evaluation & VBench (Part 10)', icon: Award, badge: 'VBench & A/B' },
     { id: 'scaling_efficiency', label: 'Scaling & Efficiency (Part 9)', icon: Server, badge: 'FSDP2 & Ulysses' },
@@ -68,7 +68,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
               <Sliders className="w-3.5 h-3.5 text-slate-400 ml-1.5 hidden md:block" />
-              {(['tiny', 'small', 'wan480p', 'wan14b'] as PresetKey[]).map((pKey) => {
+              {(['tiny', 'small', 'vidgen480p', 'vidgen14b'] as PresetKey[]).map((pKey) => {
                 const isSelected = currentPreset === pKey;
                 return (
                   <button
@@ -86,7 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               })}
             </div>
 
-            {/* Quick Wan Verification Badges */}
+            {/* Quick Vidgen Verification Badges */}
             <div className="hidden lg:flex items-center gap-2">
               <div className="text-[11px] font-mono bg-slate-900 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-emerald-400 flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>

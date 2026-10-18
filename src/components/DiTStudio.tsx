@@ -93,7 +93,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 <Cpu className="w-4 h-4" />
               </span>
               <h2 className="text-lg font-bold text-white tracking-tight">
-                Part 6: Wan DiT Backbone Engine
+                Part 6: Vidgen DiT Backbone Engine
               </h2>
             </div>
             <p className="text-xs text-slate-300 max-w-3xl">
@@ -114,7 +114,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
         {/* Sub-Tabs */}
         <div className="flex gap-2 mt-4 pt-4 border-t border-slate-800/80 overflow-x-auto no-scrollbar">
           {[
-            { id: 'block_architecture', label: 'Wan DiT Block Flow', icon: Layers },
+            { id: 'block_architecture', label: 'Vidgen DiT Block Flow', icon: Layers },
             { id: 'parameter_verifier', label: 'Preset Params & Savings', icon: BarChart3 },
             { id: 'timestep_adaln', label: 'Timestep & adaLN-Zero', icon: Sliders },
             { id: 'overfit_simulator', label: 'Overfit Test on Clips', icon: TrendingDown },
@@ -140,7 +140,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
         </div>
       </div>
 
-      {/* SUB-TAB 1: WAN DIT BLOCK FLOW */}
+      {/* SUB-TAB 1: VIDGEN DIT BLOCK FLOW */}
       {activeSubTab === 'block_architecture' && (
         <div className="space-y-6">
           <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 space-y-4">
@@ -148,7 +148,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Layers className="w-4 h-4 text-cyan-400" />
-                  Wan Block Micro-Architecture ({ditConfig.numLayers} Blocks Repeated)
+                  Vidgen Block Micro-Architecture ({ditConfig.numLayers} Blocks Repeated)
                 </h3>
                 <p className="text-xs text-slate-400">
                   Every block combines 3 sub-layers with precise normalization and modulation semantics:
@@ -660,7 +660,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                   Full 3D Spacetime Attention vs Factorized Ablation
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Comparison between full 3D attention (Wan standard) and factorized spatial + temporal attention.
+                  Comparison between full 3D attention (Vidgen standard) and factorized spatial + temporal attention.
                 </p>
               </div>
               <span className="text-xs font-mono text-cyan-400">
@@ -674,7 +674,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
               <div className="p-4 rounded-xl bg-slate-950 border border-cyan-500/40 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-400 border border-cyan-800/60 font-bold">
-                    Wan Standard (Default)
+                    Vidgen Standard (Default)
                   </span>
                   <span className="text-[10px] font-mono text-cyan-300">O(N²) Complexity</span>
                 </div>
@@ -714,7 +714,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 </div>
                 <div className="text-[11px] text-slate-400 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
-                  <span>Treat as ablation comparison only; Wan default remains Full 3D Attention.</span>
+                  <span>Treat as ablation comparison only; Vidgen default remains Full 3D Attention.</span>
                 </div>
               </div>
             </div>

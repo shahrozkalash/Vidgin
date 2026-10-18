@@ -113,7 +113,7 @@ export default function App() {
             <span>•</span>
             <span>Block-Causal KV Cache</span>
             <span>•</span>
-            <span>16 FPS Wan Target</span>
+            <span>16 FPS Vidgen Target</span>
           </div>
         </div>
       </footer>

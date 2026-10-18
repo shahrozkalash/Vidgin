@@ -55,7 +55,7 @@ export const BucketMatrixView: React.FC<BucketMatrixViewProps> = ({ currentPrese
               </h2>
             </div>
             <p className="text-xs text-slate-300 max-w-3xl">
-              Wan models bucket clips into <code className="text-cyan-300 font-mono">(T, H, W)</code> triples
+              Vidgen models bucket clips into <code className="text-cyan-300 font-mono">(T, H, W)</code> triples
               with <code className="text-cyan-300 font-mono">H, W % 16 == 0</code> and{' '}
               <code className="text-cyan-300 font-mono">T = 4k + 1</code>. Every batch is drawn from a single
               bucket, and batch size scales inversely with tokens so GPU memory and compute remain uniform.

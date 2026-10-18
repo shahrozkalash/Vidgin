@@ -236,7 +236,7 @@ export const LongVideoStudio: React.FC<LongVideoStudioProps> = ({ currentPreset 
                 Why 30-Second Video Generation is Hard
               </h3>
               <p className="text-sm text-slate-300 leading-relaxed">
-                Standard Wan models generate 5-second clips (81 frames at 16 fps, yielding 21 latent frames and 32,760 tokens at 480x832).
+                Standard Vidgen models generate 5-second clips (81 frames at 16 fps, yielding 21 latent frames and 32,760 tokens at 480x832).
                 Scaling straight to 30 seconds requires <strong>481 frames</strong> (satisfying <code className="text-cyan-300 font-mono">T = 4k + 1</code> with <code className="text-cyan-300 font-mono">k = 120</code>).
               </p>
 
@@ -264,17 +264,17 @@ export const LongVideoStudio: React.FC<LongVideoStudioProps> = ({ currentPreset 
                       <td className="py-2.5 px-3 text-cyan-400">121 x 32 x 32</td>
                       <td className="py-2.5 px-3 font-bold text-sky-400">30,976 tokens</td>
                       <td className="py-2.5 px-3 text-sky-400">Possible on Big GPU (~32k)</td>
-                      <td className="py-2.5 px-3 text-slate-400">Matches Wan 5s 480p load</td>
+                      <td className="py-2.5 px-3 text-slate-400">Matches Vidgen 5s 480p load</td>
                     </tr>
                     <tr className="hover:bg-slate-800/30 bg-rose-950/20 border-l-2 border-rose-500">
-                      <td className="py-2.5 px-3 font-semibold text-rose-300">Wan 480p (480x832)</td>
+                      <td className="py-2.5 px-3 font-semibold text-rose-300">Vidgen 480p (480x832)</td>
                       <td className="py-2.5 px-3 text-rose-400">121 x 60 x 104</td>
                       <td className="py-2.5 px-3 font-bold text-rose-400">188,760 tokens</td>
                       <td className="py-2.5 px-3 font-bold text-rose-500">IMPOSSIBLE (&gt;140 GB OOM)</td>
                       <td className="py-2.5 px-3 text-emerald-300 font-semibold">Chunked Causal (Part 13)</td>
                     </tr>
                     <tr className="hover:bg-slate-800/30">
-                      <td className="py-2.5 px-3 font-semibold text-white">Wan 14B (720x1280)</td>
+                      <td className="py-2.5 px-3 font-semibold text-white">Vidgen 14B (720x1280)</td>
                       <td className="py-2.5 px-3 text-slate-400">121 x 90 x 160</td>
                       <td className="py-2.5 px-3 font-bold text-purple-400">453,750 tokens</td>
                       <td className="py-2.5 px-3 text-purple-400">Requires cluster sharding</td>
@@ -390,7 +390,7 @@ export const LongVideoStudio: React.FC<LongVideoStudioProps> = ({ currentPreset 
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-slate-400">Native Frame Rate:</span>
-                  <span className="font-mono font-bold text-cyan-400">{fps} FPS ({fps === 16 ? 'Wan Standard' : 'Cinema'})</span>
+                  <span className="font-mono font-bold text-cyan-400">{fps} FPS ({fps === 16 ? 'Vidgen Standard' : 'Cinema'})</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {[16, 24].map((f) => (
@@ -713,7 +713,7 @@ for chunk_idx in range(num_chunks):
                 <div className={`p-4 rounded-xl border transition-all ${
                   vaeCompressionMode === '4x8x8' ? 'bg-indigo-950/40 border-indigo-500' : 'bg-slate-950 border-slate-800'
                 }`}>
-                  <div className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1">Standard Wan VAE</div>
+                  <div className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1">Standard Vidgen VAE</div>
                   <div className="text-lg font-bold text-white font-mono">4x8x8 Compression</div>
                   <div className="text-xs text-slate-400 mt-2 space-y-1 font-mono">
                     <div>Spatial: 8x down</div>
@@ -828,7 +828,7 @@ for chunk_idx in range(num_chunks):
               </h3>
               <p className="text-sm text-slate-300 leading-relaxed">
                 Training directly on 30s clips from scratch causes slow convergence and instability.
-                Wan models are trained using a staged duration curriculum while mixing in short clips and static images to avoid catastrophic forgetting.
+                Vidgen models are trained using a staged duration curriculum while mixing in short clips and static images to avoid catastrophic forgetting.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">

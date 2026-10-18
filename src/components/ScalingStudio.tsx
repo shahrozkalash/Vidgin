@@ -151,12 +151,12 @@ export const ScalingStudio: React.FC<ScalingStudioProps> = ({ currentPreset }) =
   };
 
   const CODE_SNIPPETS = {
-    trainer: `"""Wan Video Latent Diffusion Trainer (vidgen/train/train.py)"""
+    trainer: `"""Vidgen Video Latent Diffusion Trainer (vidgen/train/train.py)"""
 from vidgen.train.losses import RectifiedFlowLoss
 from vidgen.train.ema import EMAModel
 from vidgen.train.parallel import compute_invariant_batch_schedule, ReshardingCoordinator
 
-class WanTrainer:
+class VidgenTrainer:
     def __init__(self, model, lr=1e-4, world_size=1, target_global_batch=16, shift=5.0):
         self.model = model
         self.world_size = world_size
@@ -1176,11 +1176,11 @@ def test_resume_on_different_gpu_count():
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
             <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-3">
               <Layers className="w-4 h-4 text-indigo-400" />
-              Staged Training Curriculum for Wan Video Diffusion
+              Staged Training Curriculum for Vidgen Video Diffusion
             </h3>
             <p className="text-xs text-slate-300 mb-4">
               Training high-resolution video directly from random initialization leads to unstable optimization.
-              Wan models follow a disciplined 4-stage progression:
+              Vidgen models follow a disciplined 4-stage progression:
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1203,7 +1203,7 @@ def test_resume_on_different_gpu_count():
                   stage: 'Stage 3: High-Res Full Video',
                   res: '720p (49 to 81 frames)',
                   focus: 'High visual fidelity, camera dynamics, complex multi-entity interactions.',
-                  shift: 's = 5.0 (Wan standard)',
+                  shift: 's = 5.0 (Vidgen standard)',
                   badge: 'Spacetime scale',
                 },
                 {
@@ -1239,7 +1239,7 @@ def test_resume_on_different_gpu_count():
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
             <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-3">
               <DollarSign className="w-4 h-4 text-emerald-400" />
-              Compute &amp; Cost Reality: Track A vs Commercial Wan-Class
+              Compute &amp; Cost Reality: Track A vs Commercial Vidgen-Class
             </h3>
             <p className="text-xs text-slate-300 mb-4">
               Real-world budget breakdown comparing educational single-GPU runs against industrial foundation training:

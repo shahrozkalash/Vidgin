@@ -175,7 +175,7 @@ export const EvaluationStudio: React.FC = () => {
       '   ├── Mean PSNR: 34.82 dB (target > 32 dB) [PASSED]',
       '   ├── Mean SSIM: 0.9341, LPIPS: 0.0482 [PASSED]',
       '   └── Chunked vs Unchunked L1 difference: 0.0412 < 0.15 tolerance [PASSED]',
-      '📈 [0.38s] Executing Overfit Convergence Test (Wan-Tiny on 1 clip)...',
+      '📈 [0.38s] Executing Overfit Convergence Test (Vidgen-Tiny on 1 clip)...',
       '   ├── Step 100: Loss = 0.428',
       '   ├── Step 500: Loss = 0.084',
       '   ├── Step 1200: Loss = 0.00118 < 0.005 threshold [PASSED]',
@@ -216,7 +216,7 @@ export const EvaluationStudio: React.FC = () => {
               Evaluation & Benchmarking Studio
             </h1>
             <p className="text-sm text-slate-300 max-w-2xl">
-              Rigorous verification suite for Wan Video DiT models: 70 fixed validation prompts across 7 axes, 8 VBench dimensions, Fréchet Video Distance (FVD), blind Human A/B ELO rating arena, memorization checks, and instant failure mode diagnostics.
+              Rigorous verification suite for Vidgen Video DiT models: 70 fixed validation prompts across 7 axes, 8 VBench dimensions, Fréchet Video Distance (FVD), blind Human A/B ELO rating arena, memorization checks, and instant failure mode diagnostics.
             </p>
           </div>
 
@@ -1020,7 +1020,7 @@ export const EvaluationStudio: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-all flex items-center gap-2"
               >
                 <Sliders className="w-3.5 h-3.5" />
-                Apply Wan 2.1 Recommended Parameters (CFG 5.0, Steps 35, Overlap 4)
+                Apply Vidgen 2.1 Recommended Parameters (CFG 5.0, Steps 35, Overlap 4)
               </button>
             </div>
           </div>

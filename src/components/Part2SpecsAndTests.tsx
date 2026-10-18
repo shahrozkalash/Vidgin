@@ -62,7 +62,7 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
     {
       id: 'frame_rule',
       title: 'Frame Count Formula',
-      spec: 'All frame counts satisfy T % 4 == 1 (e.g. Tiny: 17, Small: 33, Wan: 81, Images: 1)',
+      spec: 'All frame counts satisfy T % 4 == 1 (e.g. Tiny: 17, Small: 33, Vidgen: 81, Images: 1)',
       status: 'VERIFIED',
     },
     {
@@ -108,7 +108,7 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
       status: 'VERIFIED',
     },
     {
-      id: 'wan480p_32760_tokens',
+      id: 'vidgen480p_32760_tokens',
       title: 'Part 4: 480p 81f Gives Exactly 32,760 Tokens',
       spec: '81 frames at 480x832 -> t=21, h=60, w=104 -> (1,2,2) patchify gives 21*30*52 = exactly 32,760 tokens',
       status: 'VERIFIED',
@@ -126,8 +126,8 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
       status: 'VERIFIED',
     },
     {
-      id: 'rope_wan_partition',
-      title: 'Part 4: Wan 44/42/42 Head Dim Partition',
+      id: 'rope_vidgen_partition',
+      title: 'Part 4: Vidgen 44/42/42 Head Dim Partition',
       spec: 'Partitions head_dim 128 into dt=44, dh=42, dw=42 all-even components for complex Givens rotation',
       status: 'VERIFIED',
     },
@@ -170,7 +170,7 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
     {
       id: 'dit_param_counts',
       title: 'Part 6: Preset Parameter Counts Match Part 0 within 10%',
-      spec: 'Tiny ~20.3M (target 20M), Small ~270.5M (target 270M), Wan 1.3B ~1.39B (target 1.3B-1.4B)',
+      spec: 'Tiny ~20.3M (target 20M), Small ~270.5M (target 270M), Vidgen 1.3B ~1.39B (target 1.3B-1.4B)',
       status: 'VERIFIED',
     },
     {
@@ -288,8 +288,8 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
       status: 'VERIFIED',
     },
     {
-      id: 'ext_wan22_dual_experts',
-      title: 'Part 11: Wan 2.2 Dual Experts (0.875 Boundary & Memory Offload)',
+      id: 'ext_vidgen22_dual_experts',
+      title: 'Part 11: Vidgen 2.2 Dual Experts (0.875 Boundary & Memory Offload)',
       spec: 'High-noise expert (t >= 0.875) & low-noise expert (t < 0.875); sequential GPU swapping maintains 14.8 GB VRAM footprint',
       status: 'VERIFIED',
     },
@@ -314,7 +314,7 @@ export const Part2SpecsAndTests: React.FC<Part2SpecsAndTestsProps> = ({ currentP
     {
       id: 'ext_milestones_m1_m5',
       title: 'Part 11: Master Milestones (M1 to M5) Verification',
-      spec: 'Tracking M1 (overfit clip), M2 (Moving MNIST), M3 (64x64 real video), M4 (Wan 1.3B LoRA), and M5 (256x256 foundation model)',
+      spec: 'Tracking M1 (overfit clip), M2 (Moving MNIST), M3 (64x64 real video), M4 (Vidgen 1.3B LoRA), and M5 (256x256 foundation model)',
       status: 'VERIFIED',
     },
     {
@@ -491,7 +491,7 @@ class LoRALinear(nn.Module):
         self.base_linear.weight.data += delta
 
 # 2. 33-Channel Image-to-Video with Zero-Init (vidgen/extensions/i2v.py)
-class WanImageToVideoDiT(nn.Module):
+class VidgenImageToVideoDiT(nn.Module):
     def __init__(self, base_dit):
         super().__init__()
         # 16 noisy latents + 16 cond latents + 1 binary mask = 33 channels
@@ -500,8 +500,8 @@ class WanImageToVideoDiT(nn.Module):
         self.new_embed.proj.weight[:, :16, ...].copy_(base_dit.patch_embed.proj.weight)
         self.new_embed.proj.weight[:, 16:, ...].zero_()  # Zero-Init guarantee!
 
-# 3. Wan 2.2 Dual Experts with 0.875 Schedule Split (vidgen/extensions/dual_experts.py)
-class Wan22DualExperts(nn.Module):
+# 3. Vidgen 2.2 Dual Experts with 0.875 Schedule Split (vidgen/extensions/dual_experts.py)
+class Vidgen22DualExperts(nn.Module):
     def __init__(self, high_expert, low_expert, boundary=0.875):
         self.high_expert = high_expert  # Active on t in [0.875, 1.0]
         self.low_expert = low_expert    # Active on t in [0.0, 0.875)
@@ -551,7 +551,7 @@ def compute_invariant_batch_schedule(target_global_batch, world_size):
     grad_accum = max(1, math.ceil(target_global_batch / (local_batch * world_size)))
     return local_batch, grad_accum, local_batch * world_size * grad_accum`,
     train: `"""Flow Matching Trainer & Resumption (vidgen/train/train.py)"""
-class WanTrainer:
+class VidgenTrainer:
     def __init__(self, model, world_size=1, target_global_batch=16, shift=5.0):
         self.model = model
         self.world_size = world_size
@@ -595,8 +595,8 @@ class FlowSampler:
             x = x + dt * v
         return x`,
 
-    pipeline: `"""Wan Inference Pipeline: Prompt In -> MP4 Out (vidgen/sample/pipeline.py)"""
-class WanInferencePipeline:
+    pipeline: `"""Vidgen Inference Pipeline: Prompt In -> MP4 Out (vidgen/sample/pipeline.py)"""
+class VidgenInferencePipeline:
     def __call__(self, prompt, negative_prompt="", height=480, width=832, frames=81, steps=30):
         # 1. Strict validation: T = 4k + 1
         validate_video_dimensions(frames=frames, height=height, width=width)
@@ -620,8 +620,8 @@ class WanInferencePipeline:
         # 6. Clip [-1, 1], convert uint8, write MP4 at 16 FPS
         return write_video_mp4(video, "output.mp4", fps=16)`,
 
-    dit: `"""Wan-style Diffusion Transformer (DiT) (vidgen/models/dit.py)"""
-class WanDiTBlock(nn.Module):
+    dit: `"""Vidgen-style Diffusion Transformer (DiT) (vidgen/models/dit.py)"""
+class VidgenDiTBlock(nn.Module):
     def __init__(self, hidden_dim, num_heads=6, ffn_dim=1536):
         # 1. Full 3D Spacetime Self-Attention with 3D RoPE & QK-RMSNorm
         self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False)
@@ -665,7 +665,7 @@ class TextCrossAttention(nn.Module):
             scores = scores.masked_fill(~mask, -10000.0) # Masked out completely
         return self.out_proj(torch.matmul(F.softmax(scores, dim=-1), v))
 
-class WanTextConditioner(nn.Module):
+class VidgenTextConditioner(nn.Module):
     """Frozen umT5-XXL / T5 encoder with precomputed null embedding and 10% CFG drop."""`,
 
     patchify: `"""3D Spacetime Patchify & Unpatchify (vidgen/models/patchify.py)"""
@@ -685,7 +685,7 @@ class SpacetimeUnpatchify(nn.Module):
 
     rope: `"""3D Rotary Position Embedding (3D RoPE) (vidgen/models/rope.py)"""
 def partition_head_dim(head_dim: int):
-    # Wan standard partition: 44 time, 42 height, 42 width for head_dim=128
+    # Vidgen standard partition: 44 time, 42 height, 42 width for head_dim=128
     if head_dim == 128: return (44, 42, 42)
     elif head_dim == 64: return (22, 22, 20)
 
@@ -695,8 +695,8 @@ class RotaryEmbedding3D(nn.Module):
         # Applies Givens 2D rotation to each axis according to its spacetime coordinate
         return q_rot, k_rot`,
 
-    vae: `"""Causal 3D VAE and Pretrained Wan VAE Wrapper (vidgen/models/vae.py)"""
-class WanVAEWrapper(nn.Module):
+    vae: `"""Causal 3D VAE and Pretrained Vidgen VAE Wrapper (vidgen/models/vae.py)"""
+class VidgenVAEWrapper(nn.Module):
     def encode(self, video, chunked=True):
         # 1. Enforce T = 4k + 1
         # 2. Encode first frame alone (T=1 image support)
@@ -727,7 +727,7 @@ def evaluate_vae_reconstruction(vae_wrapper, test_clips):
         "matches_within_tolerance": True,
     }`,
 
-    buckets: `"""Multi-Aspect Ratio and Spacetime Bucketing for Wan Video Models (vidgen/data/buckets.py)"""
+    buckets: `"""Multi-Aspect Ratio and Spacetime Bucketing for Vidgen Video Models (vidgen/data/buckets.py)"""
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Iterator
 import numpy as np
@@ -741,7 +741,7 @@ class BucketSpec:
     width: int
 
     def __post_init__(self):
-        # Validate Wan T = 4k + 1 rule
+        # Validate Vidgen T = 4k + 1 rule
         assert (self.frames - 1) % 4 == 0, f"Frames ({self.frames}) must satisfy T = 4k + 1"
         assert self.height % 16 == 0, f"Height ({self.height}) must be a multiple of 16"
         assert self.width % 16 == 0, f"Width ({self.width}) must be a multiple of 16"

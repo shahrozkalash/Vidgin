@@ -1,6 +1,6 @@
 {
-  "name": "Wan Video Latent Diffusion Studio & Architecture Engine",
-  "description": "Production-grade implementation and visualizer for Wan-style text-to-video latent diffusion models: causal 3D VAE, 3D spacetime patchify, DiT with 3D RoPE, and rectified-flow ODE sampling.",
+  "name": "Vidgen Video Latent Diffusion Studio & Architecture Engine",
+  "description": "Production-grade implementation and visualizer for Vidgen-style text-to-video latent diffusion models: causal 3D VAE, 3D spacetime patchify, DiT with 3D RoPE, and rectified-flow ODE sampling.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -100,14 +100,14 @@ export const ImprovementStudio: React.FC = () => {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <h1 className="text-xl font-bold text-white tracking-tight">
-                Part 12: Beating Wan — Targeted Architectural Improvements
+                Part 12: Beating Vidgen — Targeted Architectural Improvements
               </h1>
               <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
                 Design-Decided Axes
               </span>
             </div>
             <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
-              Targeted improvements over Wan 2.1/2.2 where clever architectural design beats pure scale: block-causal long video, 4x token reduction with hybrid windowed attention, 1-step CFG distillation, in-context reference conditioning, and structured dense prompt planning.
+              Targeted improvements over Vidgen 2.1/2.2 where clever architectural design beats pure scale: block-causal long video, 4x token reduction with hybrid windowed attention, 1-step CFG distillation, in-context reference conditioning, and structured dense prompt planning.
             </p>
           </div>
         </div>
@@ -172,7 +172,7 @@ export const ImprovementStudio: React.FC = () => {
               <div>
                 <h3 className="text-base font-bold text-white">Targeted Improvements Feature Flags</h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Every improvement is strictly gated behind a config flag defaulting to <code className="text-amber-400 font-mono">False</code> so the baseline Wan pipeline remains 100% reproducible.
+                  Every improvement is strictly gated behind a config flag defaulting to <code className="text-amber-400 font-mono">False</code> so the baseline Vidgen pipeline remains 100% reproducible.
                 </p>
               </div>
               <button
@@ -425,7 +425,7 @@ export const ImprovementStudio: React.FC = () => {
                   <span className="text-xs font-semibold text-slate-300">Attention Architecture:</span>
                   <div className="grid grid-cols-3 gap-2">
                     {[
-                      { id: 'full_3d', label: 'Full 3D', desc: 'Standard Wan' },
+                      { id: 'full_3d', label: 'Full 3D', desc: 'Standard Vidgen' },
                       { id: 'hybrid', label: 'Hybrid (3:1)', desc: '3 Win : 1 Global' },
                       { id: 'windowed', label: 'Windowed', desc: 'Local 5x8x8' },
                     ].map((mode) => (
@@ -538,7 +538,7 @@ export const ImprovementStudio: React.FC = () => {
                   <span>4 Steps (Distilled)</span>
                   <span>8 Steps (Balanced)</span>
                   <span>20 Steps (Midpoint)</span>
-                  <span>40 Steps (Wan Teacher)</span>
+                  <span>40 Steps (Vidgen Teacher)</span>
                 </div>
               </div>
 

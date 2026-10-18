@@ -191,7 +191,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
     if (isPlaying && hasGenerated && validation.valid) {
       timer = setInterval(() => {
         setCurrentFrameIdx((prev) => (prev + 1) % frames);
-      }, 1000 / 16); // 16 FPS Wan playback standard
+      }, 1000 / 16); // 16 FPS Vidgen playback standard
     }
     return () => clearInterval(timer);
   }, [isPlaying, hasGenerated, frames, validation.valid]);
@@ -251,7 +251,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
                 Prompt In → MP4 Out
               </span>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-mono bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                16 FPS Wan Standard
+                16 FPS Vidgen Standard
               </span>
             </div>
             <h2 className="text-2xl font-black text-white tracking-tight">
@@ -430,7 +430,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
                   <div className="mt-2 p-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-[11px] text-emerald-300">
                     <span className="flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                      Valid Wan VAE shape: k = {(frames - 1) / 4}
+                      Valid Vidgen VAE shape: k = {(frames - 1) / 4}
                     </span>
                     <span className="font-mono text-emerald-400 text-[10px]">
                       Latents: [1, 16, {validation.latentT}, {validation.latentH}, {validation.latentW}] ({validation.tokensCount.toLocaleString()} tokens)
@@ -543,7 +543,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
                   onChange={(e) => setGuidanceScale(parseFloat(e.target.value))}
                   className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
                 />
-                <span className="text-[10px] text-slate-400">Typical range: 4.0 - 7.0 (Wan default: 5.0)</span>
+                <span className="text-[10px] text-slate-400">Typical range: 4.0 - 7.0 (Vidgen default: 5.0)</span>
               </div>
 
               {/* Time Shift (s) */}
@@ -715,7 +715,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
 
                       {/* Video HUD Overlays */}
                       <div className="flex items-center justify-between text-[11px] font-mono text-white/80 z-10 bg-slate-950/60 backdrop-blur-md px-3 py-1 rounded-lg border border-white/10">
-                        <span>WAN VAE 16ch • RECTIFIED FLOW</span>
+                        <span>VIDGEN VAE 16ch • RECTIFIED FLOW</span>
                         <span>SEED {seed} • CFG {guidanceScale.toFixed(1)}</span>
                       </div>
 
@@ -945,7 +945,7 @@ export const SamplerStudio: React.FC<SamplerStudioProps> = ({ currentPreset }) =
               </div>
 
               <div className="p-3 bg-slate-950 rounded-xl border border-amber-500/30 space-y-1">
-                <span className="font-bold text-amber-300 block">Wan Standard Shift (s = 5.0)</span>
+                <span className="font-bold text-amber-300 block">Vidgen Standard Shift (s = 5.0)</span>
                 <p className="text-[11px] text-slate-400">
                   Warped concave schedule. Spends <span className="text-amber-300 font-bold">~65% of solver steps</span> in the high-noise region where global scene layout, motion trajectories, and subject consistency form.
                 </p>

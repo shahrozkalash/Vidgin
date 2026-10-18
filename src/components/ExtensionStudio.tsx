@@ -78,7 +78,7 @@ export const ExtensionStudio: React.FC = () => {
   const [testPrompt, setTestPrompt] = useState<string>(
     'A cinematic drone flight over a cyberpunk city with neon reflections and heavy rain'
   );
-  const [watermarkKey, setWatermarkKey] = useState<string>('VIDGEN_WAN_AUTHENTIC_2026');
+  const [watermarkKey, setWatermarkKey] = useState<string>('VIDGEN_VIDGEN_AUTHENTIC_2026');
 
   // Calculations
   const loraStats = useMemo(
@@ -97,7 +97,7 @@ export const ExtensionStudio: React.FC = () => {
   );
 
   const c2paManifest = useMemo(
-    () => generateC2PAManifest(testPrompt, `Wan-2.1-${selectedModel}`, 42, 5.0, 50),
+    () => generateC2PAManifest(testPrompt, `Vidgen-2.1-${selectedModel}`, 42, 5.0, 50),
     [testPrompt, selectedModel]
   );
 
@@ -143,7 +143,7 @@ export const ExtensionStudio: React.FC = () => {
               </span>
             </div>
             <p className="text-sm text-slate-400 leading-relaxed max-w-3xl">
-              Post-training capabilities for Wan-class video generation: LoRA parameter-efficient adaptation, 33-channel Image-to-Video with zero-init patch embeddings, Wan 2.2 dual-expert schedule partitioning, 4-step rectified flow reflow distillation, long video chunking, C2PA provenance watermarking, and Milestones M1–M5.
+              Post-training capabilities for Vidgen-class video generation: LoRA parameter-efficient adaptation, 33-channel Image-to-Video with zero-init patch embeddings, Vidgen 2.2 dual-expert schedule partitioning, 4-step rectified flow reflow distillation, long video chunking, C2PA provenance watermarking, and Milestones M1–M5.
             </p>
           </div>
         </div>
@@ -151,7 +151,7 @@ export const ExtensionStudio: React.FC = () => {
         <div className="flex items-center gap-3 self-end md:self-auto shrink-0">
           <div className="flex flex-col items-end text-xs">
             <span className="text-slate-400">Track B Target</span>
-            <span className="font-semibold text-emerald-400 font-mono">Wan 1.3B / 14B</span>
+            <span className="font-semibold text-emerald-400 font-mono">Vidgen 1.3B / 14B</span>
           </div>
           <div className="h-8 w-px bg-slate-800" />
           <div className="flex flex-col items-end text-xs">
@@ -166,7 +166,7 @@ export const ExtensionStudio: React.FC = () => {
         {[
           { id: 'lora', label: '1. LoRA Fine-Tune', icon: Layers, badge: 'Track B' },
           { id: 'i2v', label: '2. Image-to-Video (I2V)', icon: Film, badge: '33ch Zero-Init' },
-          { id: 'dual_experts', label: '3. Wan 2.2 Dual Experts', icon: Cpu, badge: '0.875 Split' },
+          { id: 'dual_experts', label: '3. Vidgen 2.2 Dual Experts', icon: Cpu, badge: '0.875 Split' },
           { id: 'distillation', label: '4. Few-Step Distillation', icon: Zap, badge: '4-8 Steps' },
           { id: 'long_video', label: '5. Long Video Chunking', icon: Scissors, badge: 'Cosine Blend' },
           { id: 'safety', label: '6. Safety & C2PA Provenance', icon: Shield, badge: 'Moderation' },
@@ -210,7 +210,7 @@ export const ExtensionStudio: React.FC = () => {
                   <h3 className="text-sm font-semibold text-white">LoRA Hyperparameter Configuration</h3>
                 </div>
                 <div className="text-xs font-mono text-slate-400">
-                  Target: Open Wan {selectedModel} Checkpoint
+                  Target: Open Vidgen {selectedModel} Checkpoint
                 </div>
               </div>
 
@@ -356,7 +356,7 @@ export const ExtensionStudio: React.FC = () => {
                   <Sparkles className="w-4 h-4 text-amber-400" />
                   <h3 className="text-sm font-semibold text-white">Curated LoRA Adapter Library</h3>
                 </div>
-                <span className="text-xs text-slate-500">PEFT Weights for Wan 1.3B</span>
+                <span className="text-xs text-slate-500">PEFT Weights for Vidgen 1.3B</span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -606,7 +606,7 @@ export const ExtensionStudio: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 3: Wan 2.2 Dual Experts */}
+      {/* TAB 3: Vidgen 2.2 Dual Experts */}
       {activeTab === 'dual_experts' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 flex flex-col gap-6">
@@ -614,7 +614,7 @@ export const ExtensionStudio: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Cpu className="w-4 h-4 text-indigo-400" />
-                  <h3 className="text-sm font-semibold text-white">Wan 2.2 Two-Expert Timestep Partitioning</h3>
+                  <h3 className="text-sm font-semibold text-white">Vidgen 2.2 Two-Expert Timestep Partitioning</h3>
                 </div>
                 <span className="text-xs font-mono text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-800">
                   Schedule Split, NOT Token-MoE
@@ -638,7 +638,7 @@ export const ExtensionStudio: React.FC = () => {
                 />
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
                   <span>0.500 (Half schedule)</span>
-                  <span className="text-emerald-400">0.875 (Official Wan 2.2 Default)</span>
+                  <span className="text-emerald-400">0.875 (Official Vidgen 2.2 Default)</span>
                   <span>0.950 (Tail only)</span>
                 </div>
               </div>

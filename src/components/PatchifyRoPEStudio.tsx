@@ -97,12 +97,12 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
             </p>
           </div>
 
-          {/* Wan 480p 32,760 Tokens Acceptance Pill */}
+          {/* Vidgen 480p 32,760 Tokens Acceptance Pill */}
           <div className="bg-slate-950 p-3 rounded-xl border border-cyan-500/40 flex items-center gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
             <div>
               <div className="text-[10px] text-slate-400 uppercase font-semibold">
-                Wan 480p (81f) Acceptance
+                Vidgen 480p (81f) Acceptance
               </div>
               <div className="text-sm font-mono font-bold text-cyan-300">
                 EXACTLY 32,760 tokens
@@ -139,7 +139,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
         </div>
       </div>
 
-      {/* SUB-TAB 1: Token Calculator & Wan 480p Verification */}
+      {/* SUB-TAB 1: Token Calculator & Vidgen 480p Verification */}
       {activeSubTab === 'tokens' && (
         <div className="space-y-6">
           {/* Quick Presets Strip */}
@@ -188,7 +188,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
               className="p-3 bg-gradient-to-br from-cyan-950/60 to-slate-900 rounded-xl border border-cyan-500/60 text-left shadow-lg shadow-cyan-500/10 cursor-pointer"
             >
               <div className="text-[10px] text-cyan-400 uppercase font-semibold flex items-center justify-between">
-                <span>Wan 480p (Spec Target)</span>
+                <span>Vidgen 480p (Spec Target)</span>
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
               </div>
               <div className="text-xl font-bold font-mono text-cyan-300">32,760 tokens</div>
@@ -206,7 +206,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
               }}
               className="p-3 bg-slate-900/90 hover:bg-slate-800/80 rounded-xl border border-slate-800 text-left transition-all cursor-pointer"
             >
-              <div className="text-[10px] text-slate-400 uppercase font-semibold">Wan 14B Preset</div>
+              <div className="text-[10px] text-slate-400 uppercase font-semibold">Vidgen 14B Preset</div>
               <div className="text-lg font-bold font-mono text-white">75,600 tokens</div>
               <div className="text-[10px] font-mono text-cyan-400">81f, 720x1280 (grid: 21×45×80)</div>
             </button>
@@ -282,7 +282,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { label: '(1, 2, 2) Standard Wan', pt: 1, ph: 2, pw: 2 },
+                    { label: '(1, 2, 2) Standard Vidgen', pt: 1, ph: 2, pw: 2 },
                     { label: '(2, 2, 2) Fast 3D', pt: 2, ph: 2, pw: 2 },
                     { label: '(1, 4, 4) Coarse 2D', pt: 1, ph: 4, pw: 4 },
                   ].map((cfg) => {
@@ -360,7 +360,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
               </div>
 
               {/* Acceptance Spec Card for 480p 81-frame preset */}
-              {tokenResult.isWan480pTarget && (
+              {tokenResult.isVidgen480pTarget && (
                 <div className="p-3.5 bg-emerald-950/40 border border-emerald-500/50 rounded-xl flex items-start gap-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                   <div className="text-xs text-emerald-200">
@@ -467,7 +467,7 @@ export const PatchifyRoPEStudio: React.FC<PatchifyRoPEStudioProps> = ({ currentP
               <div className="flex justify-between text-xs font-mono text-slate-300">
                 <span>Total head_dim: <strong className="text-white">{ropePartition.headDim}</strong></span>
                 <span className="text-cyan-400 font-bold">
-                  Wan Standard Partition: {ropePartition.dt} / {ropePartition.dh} / {ropePartition.dw}
+                  Vidgen Standard Partition: {ropePartition.dt} / {ropePartition.dh} / {ropePartition.dw}
                 </span>
               </div>
 
