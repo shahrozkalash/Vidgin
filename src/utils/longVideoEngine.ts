@@ -126,6 +126,158 @@ export function calculateLongVideoSpecs(
   };
 }
 
+export interface AttentionAnalyticalEstimate {
+  durationSeconds: number;
+  totalRawFrames: number;
+  latentFrames: number;
+  spatialTokensPerFrame: number;
+  totalVisualTokens: number;
+  textTokens: number;
+  totalSeqLen: number;
+  presetKey: PresetKey;
+  presetName: string;
+  dim: number;
+  depth: number;
+  numHeads: number;
+  // Full Attention
+  fullAttnMatrixMb: number;
+  fullAttnMatrixGb: number;
+  fullAttnFlopsTFlops: number;
+  // Decoupled Attention
+  decoupledAttnFlopsTFlops: number;
+  decoupledAttnMatrixMb: number;
+  decoupledAttnMatrixGb: number;
+  // Chunked Attention
+  numChunks: number;
+  chunkSeqLen: number;
+  chunkedAttnFlopsTFlops: number;
+  chunkedAttnMatrixMb: number;
+  chunkedAttnMatrixGb: number;
+  // Threshold comparison with 16GB free Colab T4
+  exceedsT4Memory: boolean; // fullAttnMatrixGb > 16.0
+}
+
+/**
+ * Computes analytical memory and FLOPs matching vidgen.attention:estimate_attention_flops_and_memory
+ * for the currently selected preset and duration.
+ */
+export function estimateAttentionAnalytical(
+  durationSeconds: number = 30,
+  fps: number = 16,
+  presetKey: PresetKey = 'vidgen480p'
+): AttentionAnalyticalEstimate {
+  let height = 480;
+  let width = 832;
+  let dim = 1536;
+  let depth = 30;
+  let numHeads = 12;
+  let presetName = 'Vidgen 480p';
+
+  if (presetKey === 'tiny') {
+    height = 64;
+    width = 64;
+    dim = 256;
+    depth = 6;
+    numHeads = 4;
+    presetName = 'Tiny';
+  } else if (presetKey === 'small') {
+    height = 256;
+    width = 256;
+    dim = 768;
+    depth = 12;
+    numHeads = 12;
+    presetName = 'Small';
+  } else if (presetKey === 'vidgen14b') {
+    height = 720;
+    width = 1280;
+    dim = 5120;
+    depth = 40;
+    numHeads = 40;
+    presetName = 'Vidgen 14B';
+  }
+
+  const patchSize = [1, 2, 2];
+  const vaeStride = [4, 8, 8];
+  const textTokens = 77;
+
+  // 1. Spacetime token calculation
+  const rawFrames = Math.round(durationSeconds * fps) + 1;
+  const k = Math.max(0, Math.round((rawFrames - 1) / vaeStride[0]));
+  const totalRawFrames = 4 * k + 1;
+  const latentT = Math.floor((totalRawFrames - 1) / vaeStride[0]) + 1;
+
+  const latentH = Math.floor(height / vaeStride[1]);
+  const latentW = Math.floor(width / vaeStride[2]);
+
+  const gridH = Math.floor(latentH / patchSize[1]);
+  const gridW = Math.floor(latentW / patchSize[2]);
+  const spatialTokensPerFrame = gridH * gridW;
+  const totalVisualTokens = latentT * spatialTokensPerFrame;
+  const totalSeqLen = totalVisualTokens + textTokens;
+
+  // A. Full Attention (O(N^2))
+  // FLOPs: 4 * (totalSeqLen^2) * dim * depth
+  const fullAttnFlopsTotal = 4 * Math.pow(totalSeqLen, 2) * dim * depth;
+  // Peak Attention Matrix Memory in bytes (fp16 = 2 bytes per element):
+  // numHeads * (totalSeqLen^2) * 2 bytes
+  const fullAttnMatrixBytes = numHeads * Math.pow(totalSeqLen, 2) * 2;
+  const fullAttnMatrixMb = fullAttnMatrixBytes / (1024 * 1024);
+  const fullAttnMatrixGb = fullAttnMatrixBytes / (1024 * 1024 * 1024);
+
+  // B. Decoupled Attention
+  // Spatial: latentT * 4 * (spatialTokens + textTokens)^2 * dim
+  const spatialSeqLen = spatialTokensPerFrame + textTokens;
+  const spatialFlops = latentT * 4 * Math.pow(spatialSeqLen, 2) * dim;
+  // Temporal: spatialTokens * 4 * latentT^2 * dim
+  const temporalFlops = spatialTokensPerFrame * 4 * Math.pow(latentT, 2) * dim;
+  const decoupledFlopsTotal = (spatialFlops + temporalFlops) * depth;
+
+  const spatialMatrixBytes = numHeads * Math.pow(spatialSeqLen, 2) * 2;
+  const chunkLatents = 21;
+  const temporalMatrixBytes = numHeads * Math.pow(chunkLatents, 2) * 2;
+  const decoupledMatrixBytes = Math.max(spatialMatrixBytes, temporalMatrixBytes);
+  const decoupledAttnMatrixMb = decoupledMatrixBytes / (1024 * 1024);
+  const decoupledAttnMatrixGb = decoupledMatrixBytes / (1024 * 1024 * 1024);
+
+  // C. Chunked Attention
+  const chunkOverlap = 1;
+  const numChunks = Math.max(1, Math.ceil((latentT - 1) / (chunkLatents - chunkOverlap)));
+  const chunkSeqLen = chunkLatents * spatialTokensPerFrame + textTokens;
+  const chunkFlopsPerLayer = 4 * Math.pow(chunkSeqLen, 2) * dim;
+  const chunkedFlopsTotal = numChunks * chunkFlopsPerLayer * depth;
+
+  const chunkMatrixBytes = numHeads * Math.pow(chunkSeqLen, 2) * 2;
+  const chunkedAttnMatrixMb = chunkMatrixBytes / (1024 * 1024);
+  const chunkedAttnMatrixGb = chunkMatrixBytes / (1024 * 1024 * 1024);
+
+  return {
+    durationSeconds,
+    totalRawFrames,
+    latentFrames: latentT,
+    spatialTokensPerFrame,
+    totalVisualTokens,
+    textTokens,
+    totalSeqLen,
+    presetKey,
+    presetName,
+    dim,
+    depth,
+    numHeads,
+    fullAttnMatrixMb,
+    fullAttnMatrixGb,
+    fullAttnFlopsTFlops: fullAttnFlopsTotal / 1e12,
+    decoupledAttnFlopsTFlops: decoupledFlopsTotal / 1e12,
+    decoupledAttnMatrixMb,
+    decoupledAttnMatrixGb,
+    numChunks,
+    chunkSeqLen,
+    chunkedAttnFlopsTFlops: chunkedFlopsTotal / 1e12,
+    chunkedAttnMatrixMb,
+    chunkedAttnMatrixGb,
+    exceedsT4Memory: fullAttnMatrixGb > 16.0,
+  };
+}
+
 /**
  * 13.1: Generates Block-Causal Attention Mask Matrix for visualization and verification
  */

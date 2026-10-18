@@ -1,5 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RotateCcw, Clock, Sparkles, ShieldCheck, ChevronRight, HardDrive, Film, Scissors, Cpu } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Play,
+  Pause,
+  RotateCcw,
+  Clock,
+  Sparkles,
+  ShieldCheck,
+  ChevronRight,
+  HardDrive,
+  Film,
+  Scissors,
+  Cpu,
+  Layers,
+  Sliders,
+} from 'lucide-react';
 
 interface FilmstripHeroProps {
   onExploreClick: () => void;
@@ -10,24 +24,35 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
   onExploreClick,
   onTryItClick,
 }) => {
+  // Scrub time from 0.0s to 30.0s
+  const [scrubTime, setScrubTime] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
-  const [currentChunk, setCurrentChunk] = useState<number>(0);
-  const [progress, setProgress] = useState<number>(0);
+  const [isUserScrubbing, setIsUserScrubbing] = useState<boolean>(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const animationRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(performance.now());
 
   // 6 chunks = 30 seconds total (5s each) with friendly, plain words
   const chunks = [
-    { id: 0, time: '0s - 5s', frames: 'Frames 1 - 81', label: 'Scene setup & anchor', color: 'from-sky-500 to-cyan-500' },
-    { id: 1, time: '5s - 10s', frames: 'Frames 81 - 161', label: 'Subject motion begins', color: 'from-cyan-500 to-teal-500' },
-    { id: 2, time: '10s - 15s', frames: 'Frames 161 - 241', label: 'Camera pan & flow', color: 'from-teal-500 to-emerald-500' },
-    { id: 3, time: '15s - 20s', frames: 'Frames 241 - 321', label: 'Lighting & texture shift', color: 'from-emerald-500 to-teal-500' },
-    { id: 4, time: '20s - 25s', frames: 'Frames 321 - 401', label: 'Peak action & detail', color: 'from-teal-500 to-cyan-500' },
-    { id: 5, time: '25s - 30s', frames: 'Frames 401 - 481', label: 'Seamless final frames', color: 'from-cyan-500 to-sky-500' },
+    { id: 0, startSec: 0, endSec: 5, time: '0s - 5s', frames: '1 - 81f', label: 'Scene setup & anchor', color: 'from-sky-500 to-cyan-500' },
+    { id: 1, startSec: 5, endSec: 10, time: '5s - 10s', frames: '81 - 161f', label: 'Subject motion begins', color: 'from-cyan-500 to-teal-500' },
+    { id: 2, startSec: 10, endSec: 15, time: '10s - 15s', frames: '161 - 241f', label: 'Camera pan & flow', color: 'from-teal-500 to-emerald-500' },
+    { id: 3, startSec: 15, endSec: 20, time: '15s - 20s', frames: '241 - 321f', label: 'Lighting & texture shift', color: 'from-emerald-500 to-teal-500' },
+    { id: 4, startSec: 20, endSec: 25, time: '20s - 25s', frames: '321 - 401f', label: 'Peak action & detail', color: 'from-teal-500 to-cyan-500' },
+    { id: 5, startSec: 25, endSec: 30, time: '25s - 30s', frames: '401 - 481f', label: 'Seamless final frames', color: 'from-cyan-500 to-sky-500' },
   ];
 
-  // Slow, calm loop: ~2.4 seconds per chunk, total ~14.4s per complete cycle
-  const CHUNK_DURATION_MS = 2400;
+  // Derived simulation metrics
+  const activeChunkIndex = Math.min(5, Math.floor(scrubTime / 5));
+  const currentChunk = chunks[activeChunkIndex] || chunks[0];
+  const chunkProgress = ((scrubTime - currentChunk.startSec) / 5) * 100;
+  // Exact raw frame from 1 to 481 (T = 4k + 1)
+  const currentRawFrame = Math.min(481, Math.round((scrubTime / 30) * 480) + 1);
+  // Latent frame from 1 to 121 (4x temporal VAE)
+  const currentLatentFrame = Math.min(121, Math.floor((currentRawFrame - 1) / 4) + 1);
+
+  // Speed: ~18s for full 30s timeline loop
+  const LOOP_SPEED_MULTIPLIER = 30 / 18;
 
   useEffect(() => {
     // Respect user preference for reduced motion
@@ -37,14 +62,13 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
     }
 
     const animate = (time: number) => {
-      const delta = time - lastTimeRef.current;
+      const deltaSec = (time - lastTimeRef.current) / 1000;
       lastTimeRef.current = time;
 
-      if (isPlaying) {
-        setProgress((prev) => {
-          const next = prev + (delta / CHUNK_DURATION_MS) * 100;
-          if (next >= 100) {
-            setCurrentChunk((c) => (c + 1) % chunks.length);
+      if (isPlaying && !isUserScrubbing) {
+        setScrubTime((prev) => {
+          const next = prev + deltaSec * LOOP_SPEED_MULTIPLIER;
+          if (next >= 30) {
             return 0;
           }
           return next;
@@ -61,11 +85,39 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [isPlaying, chunks.length]);
+  }, [isPlaying, isUserScrubbing]);
 
-  const handleChunkClick = (idx: number) => {
-    setCurrentChunk(idx);
-    setProgress(0);
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setScrubTime(val);
+  };
+
+  const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    setIsUserScrubbing(true);
+    updateScrubFromPointer(e);
+  };
+
+  const updateScrubFromPointer = (e: React.PointerEvent<SVGSVGElement> | React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const ratio = x / rect.width;
+    const newTime = Math.max(0, Math.min(30, ratio * 30));
+    setScrubTime(newTime);
+  };
+
+  const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (isUserScrubbing) {
+      updateScrubFromPointer(e);
+    }
+  };
+
+  const handleSvgPointerUp = () => {
+    setIsUserScrubbing(false);
+  };
+
+  const handleChunkSelect = (idx: number) => {
+    setScrubTime(idx * 5);
   };
 
   const handleTogglePlay = () => {
@@ -74,8 +126,7 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
   };
 
   const handleReset = () => {
-    setCurrentChunk(0);
-    setProgress(0);
+    setScrubTime(0);
     lastTimeRef.current = performance.now();
   };
 
@@ -105,6 +156,11 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
       detail: 'Split space & time attention',
     },
   ];
+
+  // SVG coordinate dimensions
+  const SVG_WIDTH = 900;
+  const SVG_HEIGHT = 120;
+  const playheadX = (scrubTime / 30) * SVG_WIDTH;
 
   return (
     <section className="relative overflow-hidden pt-6 pb-10 sm:pt-12 sm:pb-16 text-slate-100">
@@ -154,7 +210,7 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
           </div>
         </div>
 
-        {/* Small Stat Tiles (Replaces jargon with plain words & numbers) */}
+        {/* Small Stat Tiles */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {statTiles.map((tile, idx) => {
             const Icon = tile.icon;
@@ -178,9 +234,9 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
           })}
         </div>
 
-        {/* Creative Feature: Animated Filmstrip / Timeline */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-xl shadow-slate-950/50 space-y-4">
-          {/* Filmstrip Header Controls */}
+        {/* Interactive SVG Timeline Component */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-xl shadow-slate-950/50 space-y-5">
+          {/* Timeline Header Controls */}
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-cyan-950/60 border border-cyan-800/60 flex items-center justify-center text-cyan-400">
@@ -188,10 +244,10 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
               </div>
               <div>
                 <h2 className="text-sm sm:text-base font-semibold text-white">
-                  30-Second Generation Timeline
+                  Interactive 30-Second Generation Timeline
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Six 5-second chunks synthesized sequentially with continuous context
+                  Scrub anywhere on the SVG timeline or use the slider to inspect chunk rollout
                 </p>
               </div>
             </div>
@@ -217,20 +273,290 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
             </div>
           </div>
 
-          {/* Filmstrip Chunks Grid / Timeline (Responsive: 2 col mobile, 3 col tablet, 6 col desktop) */}
-          <div className="pt-2 pb-1">
+          {/* Interactive SVG Canvas */}
+          <div className="relative rounded-xl bg-slate-950 border border-slate-800 p-2 sm:p-3 overflow-hidden select-none">
+            <svg
+              ref={svgRef}
+              viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
+              className="w-full h-auto cursor-ew-resize touch-none block"
+              onPointerDown={handleSvgPointerDown}
+              onPointerMove={handleSvgPointerMove}
+              onPointerUp={handleSvgPointerUp}
+              onPointerCancel={handleSvgPointerUp}
+              role="img"
+              aria-label="Interactive 30-second video generation timeline"
+            >
+              <defs>
+                {/* Accent wave gradient */}
+                <linearGradient id="waveStrokeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#38bdf8" />
+                  <stop offset="50%" stopColor="#22d3ee" />
+                  <stop offset="100%" stopColor="#2dd4bf" />
+                </linearGradient>
+
+                {/* Shaded area gradient under active wave */}
+                <linearGradient id="activeAreaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.25" />
+                  <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
+                </linearGradient>
+
+                {/* Seam glow gradient */}
+                <linearGradient id="seamGlow" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.3" />
+                  <stop offset="50%" stopColor="#22d3ee" stopOpacity="0.08" />
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
+                </linearGradient>
+              </defs>
+
+              {/* Background gridlines for 6 chunks */}
+              {chunks.map((ch, idx) => {
+                const xStart = (idx / 6) * SVG_WIDTH;
+                const chunkW = SVG_WIDTH / 6;
+                const isChunkActive = activeChunkIndex === idx;
+
+                return (
+                  <g key={ch.id}>
+                    {/* Chunk boundary box */}
+                    <rect
+                      x={xStart + 2}
+                      y={8}
+                      width={chunkW - 4}
+                      height={76}
+                      rx={6}
+                      fill={isChunkActive ? '#0f172a' : '#030712'}
+                      stroke={isChunkActive ? '#0891b2' : '#1e293b'}
+                      strokeWidth={isChunkActive ? 1.5 : 1}
+                      opacity={isChunkActive ? 1 : 0.6}
+                    />
+
+                    {/* Chunk header text inside SVG */}
+                    <text
+                      x={xStart + 8}
+                      y={24}
+                      fill={isChunkActive ? '#38bdf8' : '#64748b'}
+                      fontSize={11}
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      Chunk {idx + 1}
+                    </text>
+
+                    <text
+                      x={xStart + chunkW - 8}
+                      y={24}
+                      textAnchor="end"
+                      fill="#64748b"
+                      fontSize={10}
+                      fontFamily="monospace"
+                    >
+                      {ch.time}
+                    </text>
+
+                    {/* Frame count label */}
+                    <text
+                      x={xStart + 8}
+                      y={76}
+                      fill={isChunkActive ? '#e2e8f0' : '#475569'}
+                      fontSize={10}
+                      fontFamily="sans-serif"
+                    >
+                      {ch.frames}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Seamless Seam Overlap Bands (1 latent frame cosine blend between adjacent chunks) */}
+              {[1, 2, 3, 4, 5].map((idx) => {
+                const seamX = (idx / 6) * SVG_WIDTH;
+                return (
+                  <g key={`seam-${idx}`}>
+                    <rect
+                      x={seamX - 6}
+                      y={8}
+                      width={12}
+                      height={76}
+                      fill="url(#seamGlow)"
+                    />
+                    <line
+                      x1={seamX}
+                      y1={8}
+                      x2={seamX}
+                      y2={84}
+                      stroke="#22d3ee"
+                      strokeWidth={1}
+                      strokeDasharray="2 2"
+                      opacity={0.6}
+                    />
+                  </g>
+                );
+              })}
+
+              {/* Latent Denoising Wave Curve across 30 seconds */}
+              {/* Baseline background wave */}
+              <path
+                d="M 10 50 Q 75 32, 150 50 T 300 50 T 450 50 T 600 50 T 750 50 T 890 50"
+                fill="none"
+                stroke="#1e293b"
+                strokeWidth={3}
+              />
+
+              {/* Active Denoised Wave up to playhead position */}
+              <clipPath id="playheadClip">
+                <rect x={0} y={0} width={playheadX} height={SVG_HEIGHT} />
+              </clipPath>
+
+              {/* Active Wave with neon stroke */}
+              <path
+                d="M 10 50 Q 75 32, 150 50 T 300 50 T 450 50 T 600 50 T 750 50 T 890 50"
+                fill="none"
+                stroke="url(#waveStrokeGrad)"
+                strokeWidth={3.5}
+                clipPath="url(#playheadClip)"
+              />
+
+              {/* Shaded area under active wave */}
+              <path
+                d="M 10 50 Q 75 32, 150 50 T 300 50 T 450 50 T 600 50 T 750 50 T 890 50 L 890 84 L 10 84 Z"
+                fill="url(#activeAreaGrad)"
+                clipPath="url(#playheadClip)"
+              />
+
+              {/* Time ruler at bottom (y = 96) */}
+              <line x1={8} y1={96} x2={SVG_WIDTH - 8} y2={96} stroke="#334155" strokeWidth={1} />
+              {/* Ruler ticks & labels */}
+              {[0, 5, 10, 15, 20, 25, 30].map((sec) => {
+                const tickX = (sec / 30) * (SVG_WIDTH - 16) + 8;
+                return (
+                  <g key={`tick-${sec}`}>
+                    <line x1={tickX} y1={92} x2={tickX} y2={100} stroke="#64748b" strokeWidth={1.5} />
+                    <text
+                      x={tickX}
+                      y={112}
+                      textAnchor="middle"
+                      fill="#94a3b8"
+                      fontSize={10}
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      {sec}s
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Playhead Scrub Line & Indicator Node */}
+              <g transform={`translate(${playheadX}, 0)`}>
+                {/* Glow column */}
+                <line
+                  x1={0}
+                  y1={4}
+                  x2={0}
+                  y2={96}
+                  stroke="#38bdf8"
+                  strokeWidth={2}
+                />
+                <line
+                  x1={0}
+                  y1={4}
+                  x2={0}
+                  y2={96}
+                  stroke="#38bdf8"
+                  strokeWidth={6}
+                  opacity={0.3}
+                />
+
+                {/* Top Badge showing current scrub seconds */}
+                <rect
+                  x={-24}
+                  y={4}
+                  width={48}
+                  height={18}
+                  rx={4}
+                  fill="#0284c7"
+                  stroke="#38bdf8"
+                  strokeWidth={1}
+                />
+                <text
+                  x={0}
+                  y={16}
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  fontSize={10}
+                  fontFamily="monospace"
+                  fontWeight="bold"
+                >
+                  {scrubTime.toFixed(1)}s
+                </text>
+
+                {/* Glowing Node at Wave Center */}
+                <circle cx={0} cy={50} r={5} fill="#22d3ee" stroke="#ffffff" strokeWidth={1.5} />
+                <circle cx={0} cy={50} r={9} fill="none" stroke="#38bdf8" strokeWidth={1.5} opacity={0.6} />
+
+                {/* Bottom Pointer Diamond */}
+                <polygon points="0,96 -4,103 4,103" fill="#38bdf8" />
+              </g>
+            </svg>
+          </div>
+
+          {/* Interactive Scrubbing Slider Control */}
+          <div className="space-y-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+              <label htmlFor="timeline-scrubber" className="flex items-center gap-1.5 text-slate-300 font-sans font-semibold">
+                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Timeline Scrubber</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Position:</span>
+                <strong className="text-cyan-300 font-bold">{scrubTime.toFixed(1)}s / 30.0s</strong>
+                <span className="text-slate-600">•</span>
+                <span className="text-slate-400">Frame:</span>
+                <strong className="text-emerald-300 font-bold">{currentRawFrame} / 481f</strong>
+              </div>
+            </div>
+
+            {/* Range input slider */}
+            <input
+              id="timeline-scrubber"
+              type="range"
+              min="0"
+              max="30"
+              step="0.1"
+              value={scrubTime}
+              onChange={handleSliderChange}
+              onMouseDown={() => setIsUserScrubbing(true)}
+              onMouseUp={() => setIsUserScrubbing(false)}
+              onTouchStart={() => setIsUserScrubbing(true)}
+              onTouchEnd={() => setIsUserScrubbing(false)}
+              className="w-full h-3 bg-slate-950 rounded-xl appearance-none cursor-pointer accent-cyan-400 border border-slate-800"
+              aria-valuemin={0}
+              aria-valuemax={30}
+              aria-valuenow={parseFloat(scrubTime.toFixed(1))}
+              aria-label="Scrub 30-second video generation timeline"
+            />
+
+            <div className="flex justify-between text-[11px] font-mono text-slate-500">
+              <span>0s (Start)</span>
+              <span>10s</span>
+              <span>20s</span>
+              <span>30s (481 frames)</span>
+            </div>
+          </div>
+
+          {/* 6 Filmstrip Chunks Cards synchronized with scrubber */}
+          <div className="pt-2">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
               {chunks.map((chunk, index) => {
-                const isActive = currentChunk === index;
-                const isPast = currentChunk > index;
+                const isActive = activeChunkIndex === index;
+                const isPast = activeChunkIndex > index;
 
                 return (
                   <button
                     key={chunk.id}
-                    onClick={() => handleChunkClick(index)}
+                    onClick={() => handleChunkSelect(index)}
                     className={`relative p-3 rounded-xl text-left transition-all min-h-[96px] flex flex-col justify-between border cursor-pointer ${
                       isActive
-                        ? 'bg-slate-800 border-cyan-400 shadow-md shadow-cyan-500/10'
+                        ? 'bg-slate-800 border-cyan-400 shadow-md shadow-cyan-500/10 ring-1 ring-cyan-400/40'
                         : isPast
                         ? 'bg-slate-900 border-slate-800 hover:border-slate-700 text-slate-300'
                         : 'bg-slate-900/50 border-slate-800/60 hover:border-slate-700/80 text-slate-400'
@@ -248,18 +574,17 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
                       </span>
                     </div>
 
-                    {/* Middle: Keyframe simulated visual */}
+                    {/* Middle: Simulated visual wave */}
                     <div className="my-2 h-7 rounded-md bg-slate-950 overflow-hidden relative border border-slate-800 flex items-center px-2">
                       <div className={`absolute inset-0 bg-gradient-to-r ${chunk.color} opacity-20`} />
                       
-                      {/* Active wave line */}
                       <div className="relative w-full flex items-center justify-between">
                         <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-sm shadow-cyan-400" />
                         <div className="h-[2px] flex-1 mx-1.5 bg-gradient-to-r from-sky-400 via-cyan-400 to-teal-400" />
                         <div className="w-1.5 h-1.5 rounded-full bg-teal-400" />
                       </div>
 
-                      {/* Overlap Seam marker on chunk edges */}
+                      {/* Overlap Seam marker */}
                       {index > 0 && (
                         <div 
                           title="1-latent seamless overlap with cosine cross-fade"
@@ -280,7 +605,7 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
                       <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-800 rounded-b-xl overflow-hidden">
                         <div 
                           className="h-full bg-gradient-to-r from-sky-400 via-cyan-300 to-teal-300 transition-all duration-75"
-                          style={{ width: `${progress}%` }}
+                          style={{ width: `${chunkProgress}%` }}
                         />
                       </div>
                     )}
@@ -290,12 +615,12 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
             </div>
           </div>
 
-          {/* Active Chunk Callout info with Plain Words */}
+          {/* Active Status Callout with Plain Words */}
           <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm text-slate-300">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
-                <strong className="text-white">Active Step:</strong> Generating {chunks[currentChunk].time} ({chunks[currentChunk].frames})
+                <strong className="text-white">Active Step:</strong> Generating {currentChunk.time} ({currentChunk.frames}) • <span className="text-cyan-300 font-mono font-semibold">Latent {currentLatentFrame}/121</span>
               </span>
             </div>
 

@@ -2,7 +2,15 @@ import React, { useState } from 'react';
 import { PresetKey } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
 import { calculateDiTParameters, DIT_PRESET_CONFIGS } from '../utils/ditEngine';
-import { ChevronDown, Sliders, Check } from 'lucide-react';
+import { ChevronDown, Sliders, Check, ArrowLeftRight, FileDown, Search, RotateCcw, AlertCircle } from 'lucide-react';
+import { PresetComparisonTable } from './PresetComparisonTable';
+import { exportPresetAsJsonFile } from '../utils/exportPresetJson';
+import {
+  PresetSearchFilterBar,
+  PRESET_FILTER_METADATA,
+  MemoryFilterTier,
+  HardwareFilterEnv,
+} from './PresetSearchFilterBar';
 
 interface PresetsSectionProps {
   currentPreset: PresetKey;
@@ -14,12 +22,71 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
   onPresetChange,
 }) => {
   const [openAccordion, setOpenAccordion] = useState<string | null>(null);
+  const [showComparison, setShowComparison] = useState<boolean>(false);
+  const [exportedPreset, setExportedPreset] = useState<PresetKey | null>(null);
+
+  // Search & Filter state
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [memoryFilter, setMemoryFilter] = useState<MemoryFilterTier>('all');
+  const [hardwareFilter, setHardwareFilter] = useState<HardwareFilterEnv>('all');
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setMemoryFilter('all');
+    setHardwareFilter('all');
+  };
+
+  const isFiltered = searchQuery.trim().length > 0 || memoryFilter !== 'all' || hardwareFilter !== 'all';
 
   const toggleAccordion = (id: string) => {
     setOpenAccordion((prev) => (prev === id ? null : id));
   };
 
+  const handleExport = (presetKey: PresetKey = currentPreset) => {
+    exportPresetAsJsonFile(presetKey);
+    setExportedPreset(presetKey);
+    setTimeout(() => {
+      setExportedPreset((prev) => (prev === presetKey ? null : prev));
+    }, 2500);
+  };
+
   const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen14b'];
+
+  const filteredPresetKeys = presetKeys.filter((pk) => {
+    const meta = PRESET_FILTER_METADATA[pk];
+    const cfg = PRESETS[pk] || PRESETS.tiny;
+
+    if (memoryFilter !== 'all' && meta.memoryTier !== memoryFilter) {
+      return false;
+    }
+
+    if (hardwareFilter !== 'all' && meta.hardwareEnv !== hardwareFilter) {
+      return false;
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const searchableText = [
+        meta.name,
+        meta.tagline,
+        meta.resolution,
+        meta.params,
+        meta.vram,
+        meta.hardwareLabel,
+        meta.recommendedFor,
+        meta.description,
+        cfg.ditConfig,
+        ...meta.keywords,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return tokens.every((token) => searchableText.includes(token));
+    }
+
+    return true;
+  });
 
   const presetDetails: Record<
     PresetKey,
@@ -63,7 +130,7 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
   return (
     <section id="presets" className="scroll-mt-20 space-y-6">
       {/* Section Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
             Model Presets
@@ -73,101 +140,221 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
           </p>
         </div>
 
-        {/* Mobile dropdown selector */}
-        <div className="w-full sm:hidden">
-          <label htmlFor="presets-mobile-select" className="text-xs text-slate-400 block mb-1.5 font-medium">
-            Active Preset:
-          </label>
-          <select
-            id="presets-mobile-select"
-            value={currentPreset}
-            onChange={(e) => onPresetChange(e.target.value as PresetKey)}
-            className="w-full min-h-[44px] bg-slate-900 border border-slate-800 text-sm font-medium text-slate-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+        {/* Action Controls: Export JSON & Compare Presets */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => handleExport(currentPreset)}
+            title={`Export ${activeCfg.name} architecture configuration and performance metrics as JSON`}
+            className="min-h-[44px] px-3.5 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 border border-slate-700 bg-slate-900/90 text-slate-200 hover:text-white hover:border-cyan-500/60 hover:bg-slate-800/80 transition-all active:scale-[0.98] cursor-pointer shadow-sm"
           >
-            {presetKeys.map((pk) => {
-              const cfg = PRESETS[pk] || PRESETS.tiny;
-              return (
-                <option key={pk} value={pk}>
-                  {cfg.name} • {cfg.params} • {cfg.resolution}
-                </option>
-              );
-            })}
-          </select>
+            {exportedPreset === currentPreset ? (
+              <>
+                <Check className="w-4 h-4 text-emerald-400" />
+                <span className="text-emerald-300 font-medium">Exported JSON!</span>
+              </>
+            ) : (
+              <>
+                <FileDown className="w-4 h-4 text-cyan-400" />
+                <span>Export JSON</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                  {currentPreset}
+                </span>
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => setShowComparison((prev) => !prev)}
+            aria-expanded={showComparison}
+            className={`min-h-[44px] px-4 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 border transition-all cursor-pointer ${
+              showComparison
+                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 shadow-md shadow-cyan-500/10 ring-1 ring-cyan-400/40'
+                : 'bg-slate-900/90 border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 hover:bg-slate-800/80'
+            }`}
+          >
+            <ArrowLeftRight className="w-4 h-4 text-cyan-400" />
+            <span>{showComparison ? 'Hide Comparison' : 'Compare Presets'}</span>
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                showComparison ? 'bg-cyan-400/20 text-cyan-200' : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              Side-by-Side
+            </span>
+          </button>
         </div>
       </div>
 
-      {/* Preset Cards Grid (Responsive: 1 col on mobile, 2 col on tablet, 4 col on desktop) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {presetKeys.map((pk) => {
-          const cfg = PRESETS[pk] || PRESETS.tiny;
-          const meta = presetDetails[pk];
-          const isSelected = currentPreset === pk;
+      {/* Interactive Search & Filter Bar */}
+      <PresetSearchFilterBar
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        memoryFilter={memoryFilter}
+        onMemoryFilterChange={setMemoryFilter}
+        hardwareFilter={hardwareFilter}
+        onHardwareFilterChange={setHardwareFilter}
+        totalCount={presetKeys.length}
+        filteredCount={filteredPresetKeys.length}
+        onResetFilters={handleResetFilters}
+      />
 
-          return (
-            <button
-              key={pk}
-              onClick={() => onPresetChange(pk)}
-              className={`min-h-[44px] p-5 rounded-2xl text-left transition-all flex flex-col justify-between border ${
-                isSelected
-                  ? 'bg-slate-900 border-cyan-400/90 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-400/50'
-                  : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/90'
-              }`}
-            >
-              <div className="w-full space-y-3">
-                {/* Header: Name & Selection indicator */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                    {cfg.params}
-                  </span>
-                  {isSelected ? (
-                    <span className="w-6 h-6 rounded-full bg-cyan-400 text-slate-950 flex items-center justify-center">
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+      {/* Notice if current active preset is hidden by filter */}
+      {isFiltered && !filteredPresetKeys.includes(currentPreset) && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              The currently selected preset <strong className="text-white">"{activeCfg.name}"</strong> is hidden by your active filters.
+            </span>
+          </div>
+          <button
+            onClick={handleResetFilters}
+            className="text-amber-300 hover:text-white font-semibold underline cursor-pointer shrink-0"
+          >
+            Reset filters to view it
+          </button>
+        </div>
+      )}
+
+      {/* Side-by-Side Unified Comparison Table */}
+      {showComparison && (
+        <PresetComparisonTable
+          initialPresetA={currentPreset}
+          initialPresetB={currentPreset === 'vidgen480p' ? 'small' : 'vidgen480p'}
+          activePreset={currentPreset}
+          onSelectActivePreset={onPresetChange}
+        />
+      )}
+
+      {/* Mobile dropdown selector */}
+      <div className="w-full sm:hidden">
+        <label htmlFor="presets-mobile-select" className="text-xs text-slate-400 block mb-1.5 font-medium">
+          Active Preset:
+        </label>
+        <select
+          id="presets-mobile-select"
+          value={currentPreset}
+          onChange={(e) => onPresetChange(e.target.value as PresetKey)}
+          className="w-full min-h-[44px] bg-slate-900 border border-slate-800 text-sm font-medium text-slate-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+        >
+          {presetKeys.map((pk) => {
+            const cfg = PRESETS[pk] || PRESETS.tiny;
+            const isMatch = filteredPresetKeys.includes(pk);
+            return (
+              <option key={pk} value={pk}>
+                {cfg.name} • {cfg.params} • {cfg.resolution} {isFiltered ? (isMatch ? '✓' : '(hidden by filter)') : ''}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+
+      {/* Preset Cards Grid or Empty State */}
+      {filteredPresetKeys.length === 0 ? (
+        <div className="p-8 sm:p-10 rounded-2xl bg-slate-900/60 border border-slate-800 text-center space-y-4">
+          <div className="w-12 h-12 rounded-full bg-slate-800/80 flex items-center justify-center mx-auto text-slate-400 border border-slate-700">
+            <Search className="w-5 h-5 text-slate-400" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-white">No presets match your filters</h3>
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
+              No model presets found matching {searchQuery ? `"${searchQuery}"` : 'the selected memory footprint and hardware environment'}. Try adjusting your search term or clearing the active filters.
+            </p>
+          </div>
+          <button
+            onClick={handleResetFilters}
+            className="min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-400/50 hover:bg-cyan-500/30 transition-all cursor-pointer inline-flex items-center gap-2 shadow-xs"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reset Search &amp; Filters</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {filteredPresetKeys.map((pk) => {
+            const cfg = PRESETS[pk] || PRESETS.tiny;
+            const meta = presetDetails[pk];
+            const filterMeta = PRESET_FILTER_METADATA[pk];
+            const isSelected = currentPreset === pk;
+
+            return (
+              <button
+                key={pk}
+                onClick={() => onPresetChange(pk)}
+                className={`min-h-[44px] p-5 rounded-2xl text-left transition-all flex flex-col justify-between border cursor-pointer ${
+                  isSelected
+                    ? 'bg-slate-900 border-cyan-400/90 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-400/50'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/90'
+                }`}
+              >
+                <div className="w-full space-y-3">
+                  {/* Header: Name & Selection indicator */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      {cfg.params}
                     </span>
-                  ) : (
-                    <span className="text-xs text-slate-500">Select</span>
-                  )}
+                    {isSelected ? (
+                      <span className="w-6 h-6 rounded-full bg-cyan-400 text-slate-950 flex items-center justify-center">
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500">Select</span>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-bold text-white">
+                      {cfg.name}
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {cfg.tagline}
+                    </p>
+                  </div>
+
+                  {/* Specs List as friendly stacked badges */}
+                  <div className="space-y-1.5 pt-2 border-t border-slate-800/80 text-xs">
+                    <div className="flex justify-between text-slate-400">
+                      <span>Resolution:</span>
+                      <strong className="text-slate-200 font-mono">{cfg.resolution}</strong>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Base frames:</span>
+                      <strong className="text-slate-200 font-mono">{cfg.baseFrames}f</strong>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Tokens/chunk:</span>
+                      <strong className="text-cyan-300 font-mono">{cfg.tokens.toLocaleString()}</strong>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Target VRAM:</span>
+                      <strong className="text-emerald-300 font-mono">{meta.vram}</strong>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Hardware:</span>
+                      <strong
+                        className="text-indigo-300 font-mono text-[11px] truncate max-w-[130px]"
+                        title={filterMeta.hardwareLabel}
+                      >
+                        {filterMeta.hardwareLabel.split('(')[0].trim()}
+                      </strong>
+                    </div>
+                  </div>
                 </div>
 
-                <div>
-                  <h3 className="text-lg font-bold text-white">
-                    {cfg.name}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {cfg.tagline}
+                {/* Bottom footer description */}
+                <div className="mt-4 pt-3 border-t border-slate-800/60 w-full space-y-1">
+                  <p className="text-[11px] font-semibold text-slate-300 truncate" title={filterMeta.hardwareLabel}>
+                    {filterMeta.hardwareLabel}
+                  </p>
+                  <p className="text-xs text-slate-400 line-clamp-2">
+                    {meta.recommendedFor}
                   </p>
                 </div>
-
-                {/* Specs List as friendly stacked badges */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-800/80 text-xs">
-                  <div className="flex justify-between text-slate-400">
-                    <span>Resolution:</span>
-                    <strong className="text-slate-200 font-mono">{cfg.resolution}</strong>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Base frames:</span>
-                    <strong className="text-slate-200 font-mono">{cfg.baseFrames}f</strong>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Tokens/chunk:</span>
-                    <strong className="text-cyan-300 font-mono">{cfg.tokens.toLocaleString()}</strong>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Target VRAM:</span>
-                    <strong className="text-emerald-300 font-mono">{meta.vram}</strong>
-                  </div>
-                </div>
-              </div>
-
-              {/* Bottom footer description */}
-              <div className="mt-4 pt-3 border-t border-slate-800/60 w-full">
-                <p className="text-xs text-slate-400 line-clamp-2">
-                  {meta.recommendedFor}
-                </p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Accordions for Deep Technical Details */}
       <div className="space-y-3 pt-2">
@@ -216,6 +403,20 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
                     &gt;80% (Shared MLP)
                   </strong>
                 </div>
+              </div>
+
+              {/* Export CTA within deep specs accordion */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
+                <span className="text-xs text-slate-400">
+                  Export complete architecture hyperparameters, parameter breakdowns, and memory/FLOPs metrics:
+                </span>
+                <button
+                  onClick={() => handleExport(currentPreset)}
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-800 text-cyan-300 border border-slate-700 hover:border-cyan-400 transition-colors cursor-pointer shrink-0"
+                >
+                  <FileDown className="w-3.5 h-3.5" />
+                  <span>Download {activeCfg.name} JSON Specification</span>
+                </button>
               </div>
             </div>
           )}
