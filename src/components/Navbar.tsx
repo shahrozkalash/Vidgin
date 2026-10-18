@@ -1,7 +1,7 @@
 import React from 'react';
 import { PresetKey } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
-import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles, Server, Award, Zap, Target } from 'lucide-react';
+import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles, Server, Award, Zap, Target, Film } from 'lucide-react';
 
 interface NavbarProps {
   currentPreset: PresetKey;
@@ -19,6 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const preset = PRESETS[currentPreset];
 
   const navItems = [
+    { id: 'long_video_30s', label: '30-Second Video (Part 13)', icon: Film, badge: '481f & Flat O(1)' },
     { id: 'targeted_improvements', label: 'Beating Wan (Part 12)', icon: Target, badge: 'Targeted Gains' },
     { id: 'extensions_studio', label: 'Post-Training & Extensions (Part 11)', icon: Zap, badge: 'LoRA, I2V, Experts' },
     { id: 'evaluation_vbench', label: 'Evaluation & VBench (Part 10)', icon: Award, badge: 'VBench & A/B' },
@@ -42,23 +43,23 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center justify-between h-16">
           {/* Logo & Branding */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-sky-600 to-indigo-500 p-0.5 shadow-lg shadow-cyan-500/20">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-sky-600 to-cyan-400 p-0.5 shadow-lg shadow-indigo-500/20">
               <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Video className="w-5 h-5 text-cyan-400" />
+                <Video className="w-5 h-5 text-indigo-400" />
               </div>
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold tracking-tight text-white text-base">VidGen Studio</span>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60">
-                  Part 12 Active
+                <span className="px-2 py-0.5 text-xs font-semibold rounded bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
+                  Part 13 Active
                 </span>
                 <span className="px-1.5 py-0.2 text-[10px] font-mono rounded bg-slate-800 text-slate-300">
-                  Targeted Improvements (Beating Wan)
+                  30-Second Video (481f, 16 FPS)
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">
-                Block-Causal 3D • 4x Token Reduction • 1-Step CFG Distill • LLM Prompt Planner • In-Context Reference • DINOv2 Alignment
+                Causal Chunked KV Cache • RoPE Re-indexing • Flat O(1) Memory • Timeline Prompt Planner • Streaming Causal VAE
               </p>
             </div>
           </div>

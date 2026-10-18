@@ -16,13 +16,14 @@ import { ScalingStudio } from './components/ScalingStudio';
 import { EvaluationStudio } from './components/EvaluationStudio';
 import { ExtensionStudio } from './components/ExtensionStudio';
 import { ImprovementStudio } from './components/ImprovementStudio';
+import { LongVideoStudio } from './components/LongVideoStudio';
 
 export default function App() {
   const [currentPreset, setCurrentPreset] = useState<PresetKey>('tiny');
-  const [activeTab, setActiveTab] = useState<string>('targeted_improvements');
+  const [activeTab, setActiveTab] = useState<string>('long_video_30s');
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30 selection:text-indigo-200">
       {/* Studio Header & Navigation */}
       <Navbar
         currentPreset={currentPreset}
@@ -33,6 +34,10 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeTab === 'long_video_30s' && (
+          <LongVideoStudio currentPreset={currentPreset} />
+        )}
+
         {activeTab === 'targeted_improvements' && (
           <ImprovementStudio />
         )}
@@ -98,15 +103,15 @@ export default function App() {
       <footer className="border-t border-slate-800/80 bg-slate-950 py-4 text-center text-xs text-slate-500 font-mono">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-            <span>VidGen Engine • Wan-Style Text-to-Video Latent Diffusion</span>
+            <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
+            <span>VidGen Engine • Part 13: 30-Second Video (481f, 16 FPS, Flat O(1) Memory)</span>
           </div>
           <div className="flex items-center gap-3 text-slate-400">
-            <span>T = 4k + 1</span>
+            <span>T = 4k + 1 (481f / 30s)</span>
             <span>•</span>
-            <span>(H, W) % 16 == 0</span>
+            <span>121 Latents</span>
             <span>•</span>
-            <span>fp16 Latents & bf16 Text</span>
+            <span>Block-Causal KV Cache</span>
             <span>•</span>
             <span>16 FPS Wan Target</span>
           </div>

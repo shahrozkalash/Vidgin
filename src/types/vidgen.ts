@@ -150,5 +150,58 @@ export interface ExpandedPromptResult {
   tokenCount: number;
 }
 
+export interface LongVideoSpecs {
+  durationSeconds: number; // 30
+  fps: number; // 16 or 24
+  totalFrames: number; // 481 for 16fps, 721 for 24fps (strictly 4k + 1)
+  k: number; // 120 (16fps) or 180 (24fps)
+  latentFrames: number; // 121 (16fps) or 181 (24fps)
+  chunkDurationSec: number; // ~5s (81 frames, 21 latents)
+  framesPerChunk: number; // 81
+  latentFramesPerChunk: number; // 21
+  numChunks: number; // 6
+  overlapLatents: number; // 1 latent frame overlap
+  tokensPerChunk: number;
+  totalTokensFullAttn: number;
+  attentionComplexityReduction: number;
+  fullAttnVramGb: number;
+  chunkedKvVramGb: number;
+}
+
+export interface TimelineSegment {
+  index: number;
+  timeRangeSec: [number, number]; // [0, 5], [5, 10], ...
+  segmentCaption: string;
+  cameraMotion: string;
+  action: string;
+  isCaptionDropped: boolean; // 10% CFG dropout
+  status: 'pending' | 'denoising' | 'cached' | 'decoded';
+  identitySim: number; // 0.0 to 1.0 (DINO similarity)
+  colorDrift: number; // percent shift
+  borderPsnr: number; // dB continuity across chunk seam
+}
+
+export interface LongVideoRolloutState {
+  currentChunk: number;
+  activeWindow: number[];
+  anchorFrames: number;
+  contextNoiseSigma: number;
+  memoryKvMb: number;
+  memoryFullAttnMb: number;
+  streamedChunks: number[];
+  isComplete: boolean;
+}
+
+export interface LongVideoAcceptanceTest {
+  id: string;
+  title: string;
+  category: 'CPU_NOW' | 'GPU_LATER';
+  spec: string;
+  status: 'passed' | 'pending' | 'running';
+  metricValue: string;
+  tolerance: string;
+}
+
+
 
 

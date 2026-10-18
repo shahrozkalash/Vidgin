@@ -1,5 +1,0 @@
-{
-  "tests/test_data_curation.py::test_bucket_sampler": true,
-  "tests/test_data_curation.py::test_curated_video_dataset": true,
-  "tests/test_dataset_bucketing.py::test_throughput_and_visual_dump_acceptance": true
-}
