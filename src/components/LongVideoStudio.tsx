@@ -242,7 +242,7 @@ export const LongVideoStudio: React.FC<LongVideoStudioProps> = ({ currentPreset 
                 Why 30-Second Video Generation is Hard
               </h3>
               <p className="text-sm text-slate-300 leading-relaxed">
-                Standard Vidgen models generate 5-second clips (81 frames at 16 fps, yielding 21 latent frames and 32,760 tokens at 480x832).
+                Typical open video models generate about 5-second clips (81 frames at 16 fps, yielding 21 latent frames and 32,760 tokens at 480x832).
                 Scaling straight to 30 seconds requires <strong>481 frames</strong> (satisfying <code className="text-cyan-300 font-mono">T = 4k + 1</code> with <code className="text-cyan-300 font-mono">k = 120</code>).
               </p>
 

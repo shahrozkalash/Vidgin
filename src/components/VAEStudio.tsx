@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { PresetKey, VAEEvaluationReport } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
-import { WAN_VAE_SPEC, generate20ClipVAEEvaluation, getLatentShape } from '../utils/vaeEngine';
+import { VIDGEN_VAE_SPEC, generate20ClipVAEEvaluation, getLatentShape } from '../utils/vaeEngine';
 import { renderMovingMNISTClip } from '../utils/movingMnist';
 import {
   Layers,
@@ -71,7 +71,7 @@ export const VAEStudio: React.FC<VAEStudioProps> = ({ currentPreset }) => {
       return;
     }
 
-    const interval = 1000 / 16; // 16 FPS Wan native
+    const interval = 1000 / 16; // 16 FPS Vidgen native
     const loop = (timestamp: number) => {
       if (!lastTimeRef.current) lastTimeRef.current = timestamp;
       const elapsed = timestamp - lastTimeRef.current;
@@ -181,8 +181,8 @@ export const VAEStudio: React.FC<VAEStudioProps> = ({ currentPreset }) => {
               Spacetime compression: <strong className="text-white">4x temporal</strong> (
               <code className="text-cyan-300 font-mono">T = 4k + 1 → k + 1</code>) and{' '}
               <strong className="text-white">8x spatial</strong> with{' '}
-              <strong className="text-cyan-300 font-mono">16 latent channels</strong>. Pretrained Wan VAE wrapper
-              under permissive <strong className="text-emerald-400 font-mono">{WAN_VAE_SPEC.license}</strong>,
+              <strong className="text-cyan-300 font-mono">16 latent channels</strong>. Pretrained Vidgen VAE wrapper
+              under permissive <strong className="text-emerald-400 font-mono">{VIDGEN_VAE_SPEC.license}</strong>,
               causal chunking, spatial tiling, and channel normalization.
             </p>
           </div>
@@ -190,7 +190,7 @@ export const VAEStudio: React.FC<VAEStudioProps> = ({ currentPreset }) => {
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono bg-slate-950 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-800 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              {WAN_VAE_SPEC.license}
+              {VIDGEN_VAE_SPEC.license}
             </span>
           </div>
         </div>
@@ -477,7 +477,7 @@ export const VAEStudio: React.FC<VAEStudioProps> = ({ currentPreset }) => {
                 <p className="text-[11px] text-slate-300 leading-relaxed">
                   Without per-channel mean and standard deviation scaling (z_norm = (z - mean_c) / std_c),
                   the latents drift into regions where the decoder outputs flat muddy tones with suppressed high-frequency
-                  edge details. Wan VAE requires strict normalization before passing latents to the DiT backbone.
+                  edge details. Vidgen VAE requires strict normalization before passing latents to the DiT backbone.
                 </p>
               </div>
             </div>
@@ -638,10 +638,10 @@ export const VAEStudio: React.FC<VAEStudioProps> = ({ currentPreset }) => {
           <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 space-y-2">
             <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
               <Zap className="w-4 h-4" />
-              Later Option: Wan 2.2 4x16x16 Higher Compression
+              Later Option: Vidgen 2.2 4x16x16 Higher Compression
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Wan 2.2 5B models introduce 4x16x16 spatial downsampling with increased latent channel depth (e.g. 32 channels)
+              Vidgen 2.2 5B models introduce 4x16x16 spatial downsampling with increased latent channel depth (e.g. 32 channels)
               to cut DiT token sequence length in half for ultra-long 1080p generation.
             </p>
             <div className="text-[11px] font-mono text-cyan-300 bg-slate-950 p-2.5 rounded-lg border border-slate-800">

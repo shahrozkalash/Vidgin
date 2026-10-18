@@ -29,14 +29,14 @@ from vidgen.continuity import LatentFrame, compute_seam_metric
 
 def run_flops_and_memory_comparison():
     """
-    Prints comparative analytical table for 5s (81f) and 30s (481f) on Wan 480p and Tiny presets.
+    Prints comparative analytical table for 5s (81f) and 30s (481f) on Vidgen 480p and Tiny presets.
     """
     print("=" * 80)
     print("PART 1: THEORETICAL FLOPS & MEMORY SCALING ANALYSIS (Seedance Decoupled Attention)")
     print("=" * 80)
 
     for preset_name, res, dim, depth, heads in [
-        ("Wan 480p (Production)", (480, 832), 1536, 30, 12),
+        ("Vidgen 480p (Production)", (480, 832), 1536, 30, 12),
         ("Tiny Preset (Prototyping)", (64, 64), 256, 6, 4),
     ]:
         print(f"\n--- Preset: {preset_name} [Res: {res[0]}x{res[1]}, Dim: {dim}, Depth: {depth}, Heads: {heads}] ---")

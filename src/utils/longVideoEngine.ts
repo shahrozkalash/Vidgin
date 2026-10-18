@@ -23,7 +23,7 @@ export interface AttentionMaskMatrix {
 export function calculateLongVideoSpecs(
   durationSec: number = 30,
   fps: number = 16,
-  presetKey: PresetKey = 'wan480p',
+  presetKey: PresetKey = 'vidgen480p',
   vaeMode: '4x8x8' | '4x16x16' | '8x8x8_temporal' = '4x8x8'
 ): LongVideoSpecs {
   // Validate T = 4k + 1
@@ -51,7 +51,7 @@ export function calculateLongVideoSpecs(
   } else if (presetKey === 'small') {
     height = 256;
     width = 256;
-  } else if (presetKey === 'wan14b' || presetKey === 'vidgen14b') {
+  } else if (presetKey === 'vidgen14b') {
     height = 720;
     width = 1280;
   }
@@ -90,7 +90,7 @@ export function calculateLongVideoSpecs(
   let fullAttnVramGb = 0;
   let chunkedKvVramGb = 0;
 
-  if (presetKey === 'wan480p' || presetKey === 'vidgen480p') {
+  if (presetKey === 'vidgen480p') {
     // 188,760 tokens full attention would require >140 GB VRAM
     fullAttnVramGb = 142.5;
     // Chunked KV cache with 1 window chunk + 2 anchors: fits comfortably in ~18.5 GB VRAM
@@ -102,7 +102,7 @@ export function calculateLongVideoSpecs(
     fullAttnVramGb = 1.8;
     chunkedKvVramGb = 0.8;
   } else {
-    // Wan 14B
+    // Vidgen 14B
     fullAttnVramGb = 420.0;
     chunkedKvVramGb = 44.0;
   }

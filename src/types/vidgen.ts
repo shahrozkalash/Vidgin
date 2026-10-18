@@ -12,7 +12,7 @@ export interface BucketSpec {
   tokens: number; // After 4x temporal, 8x spatial, (1, 2, 2) patchify
 }
 
-export type PresetKey = 'tiny' | 'small' | 'vidgen480p' | 'vidgen14b' | 'wan480p' | 'wan14b';
+export type PresetKey = 'tiny' | 'small' | 'vidgen480p' | 'vidgen14b';
 
 export interface PresetConfig {
   key: PresetKey;
@@ -128,7 +128,6 @@ export interface PatchifyCalcResult {
   gridW: number;
   totalTokens: number;
   isVidgen480pTarget: boolean;
-  isWan480pTarget?: boolean;
 }
 
 export interface RoPEPartitionSpec {

@@ -54,18 +54,6 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
       speed: 'Studio grade',
       description: 'Large-scale 14B model for commercial photorealistic motion graphics.',
     },
-    wan480p: {
-      recommendedFor: 'Production high-fidelity standard',
-      vram: '~18.4 GB',
-      speed: 'Standard',
-      description: 'Our primary 1.3B workhorse model capable of sustained 30-second clips.',
-    },
-    wan14b: {
-      recommendedFor: 'Cinematic flagship studio grade',
-      vram: '~48 GB (Multi-GPU)',
-      speed: 'Studio grade',
-      description: 'Large-scale 14B model for commercial photorealistic motion graphics.',
-    },
   };
 
   const activeCfg = PRESETS[currentPreset] || PRESETS.tiny;
@@ -256,9 +244,9 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
               <p className="text-xs text-slate-400">
                 All training and inference buckets enforce both spatial divisibility by 16 and exact temporal congruence ($T \equiv 1 \pmod 4$).
               </p>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 text-xs">
                 {['16:9 (Landscape)', '9:16 (Portrait)', '1:1 (Square)', '4:3 (Classic)', '3:4 (Tall)'].map((r, i) => (
-                  <div key={i} className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 text-center">
+                  <div key={i} className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center">
                     <span className="font-semibold text-slate-200 block">{r.split(' ')[0]}</span>
                     <span className="text-[10px] text-slate-400">{r.split(' ')[1]}</span>
                   </div>

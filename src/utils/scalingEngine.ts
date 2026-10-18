@@ -1,5 +1,5 @@
 /**
- * Scaling & Distributed Training Engine for Wan Video Diffusion (Part 9)
+ * Scaling & Distributed Training Engine for Vidgen Video Diffusion (Part 9)
  *
  * Implements:
  * - VRAM memory breakdown (FSDP2 / ZeRO-3, Activation Checkpointing, 8-bit AdamW)
@@ -8,7 +8,7 @@
  * - Cross-topology checkpoint resharding and resumption verification
  * - Model FLOPs Utilization (MFU) & Tokens/sec throughput profiler
  * - DeepSpeed Ulysses sequence parallelism communication vs compute modeling
- * - Cost and compute reality comparison (Track A vs Wan-class 14B)
+ * - Cost and compute reality comparison (Track A vs Vidgen-class 14B)
  */
 
 import { PresetKey } from '../types/vidgen';
@@ -390,7 +390,7 @@ export const TRAINING_COST_REALITY: TrainingTrackCost[] = [
     curriculumStage: 'Full Curriculum (720p 49 frames with aesthetic filtering)',
   },
   {
-    trackName: 'Commercial Wan-Class Scale',
+    trackName: 'Commercial Vidgen-Class Scale',
     preset: 'large (14B)',
     params: '14.2 Billion params',
     hardware: '256x H100 SXM5 (Cluster)',

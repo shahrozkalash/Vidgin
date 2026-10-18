@@ -201,12 +201,12 @@ export const VALIDATION_PROMPTS: ValidationPromptItem[] = [
   // 4. Text Legibility
   {
     id: 'text_01',
-    prompt: "A glowing cyan neon sign mounted on brick reading 'WAN 2.1' with soft neon flicker and rain reflections.",
+    prompt: "A glowing cyan neon sign mounted on brick reading 'VIDGEN 2.1' with soft neon flicker and rain reflections.",
     category: 'text',
     seed: 4001,
     difficulty: 'challenging',
     targetMetric: 'text_alignment',
-    description: "Specific character glyph rendering ('WAN 2.1'), luminescence bloom.",
+    description: "Specific character glyph rendering ('VIDGEN 2.1'), luminescence bloom.",
   },
   {
     id: 'text_02',
@@ -357,7 +357,7 @@ export const DEFAULT_CHECKPOINTS: CheckpointEvalProfile[] = [
     id: 'cp_50k_stage4',
     name: 'Checkpoint 50k (Curriculum Stage 4 - Aesthetic)',
     step: 50000,
-    architecture: 'Wan-Base (1.3B)',
+    architecture: 'Vidgen-Base (1.3B)',
     elo: 1342.0,
     wins: 48,
     losses: 12,
@@ -381,7 +381,7 @@ export const DEFAULT_CHECKPOINTS: CheckpointEvalProfile[] = [
     id: 'cp_20k_stage2',
     name: 'Checkpoint 20k (Curriculum Stage 2 - Short Video)',
     step: 20000,
-    architecture: 'Wan-Base (1.3B)',
+    architecture: 'Vidgen-Base (1.3B)',
     elo: 1228.0,
     wins: 28,
     losses: 24,
@@ -405,7 +405,7 @@ export const DEFAULT_CHECKPOINTS: CheckpointEvalProfile[] = [
     id: 'cp_5k_stage1',
     name: 'Checkpoint 5k (Curriculum Stage 1 - Low Res)',
     step: 5000,
-    architecture: 'Wan-Base (1.3B)',
+    architecture: 'Vidgen-Base (1.3B)',
     elo: 1085.0,
     wins: 10,
     losses: 42,
@@ -429,7 +429,7 @@ export const DEFAULT_CHECKPOINTS: CheckpointEvalProfile[] = [
     id: 'cp_overfit_1clip',
     name: 'Checkpoint Overfit-1 (Acceptance Baseline)',
     step: 1200,
-    architecture: 'Wan-Tiny (14M)',
+    architecture: 'Vidgen-Tiny (14M)',
     elo: 1145.0,
     wins: 16,
     losses: 20,
@@ -544,7 +544,7 @@ export function diagnoseGeneration(params: {
         'Extrapolated velocity vectors push latents outside dynamic range [-1.0, 1.0], saturating RGB channels.',
       ],
       prescriptions: [
-        'Lower CFG guidance scale to 4.5 - 6.0 (Wan 2.1 recommended default: 5.0).',
+        'Lower CFG guidance scale to 4.5 - 6.0 (Vidgen 2.1 recommended default: 5.0).',
         'Enable dynamic thresholding or latent percentile clamping in sampler ODE loop.',
       ],
       affectedMetrics: { guidance_scale: params.cfgScale },
@@ -610,7 +610,7 @@ export function diagnoseGeneration(params: {
       status: 'OPTIMAL',
       issue: 'Generation Parameters & Metrics Nominal',
       likelyCauses: ['Balanced CFG guidance (5.0), adequate sampling steps (30+), calibrated VAE.'],
-      prescriptions: ['Generation profile meets all Wan 2.1 VBench production standards.'],
+      prescriptions: ['Generation profile meets all Vidgen 2.1 VBench production standards.'],
       affectedMetrics: { status: 'OPTIMAL' },
     });
   }

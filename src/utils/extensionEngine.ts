@@ -4,7 +4,7 @@
  * Implements:
  * 1. LoRA Parameter-Efficient Fine-Tuning Manager & Merging Engine
  * 2. Image-to-Video (I2V) 33-Channel Architecture & Zero-Init Weight Inspector
- * 3. Wan 2.2 Dual-Expert Schedule Splitter with 0.875 Boundary & Memory Offload Tracker
+ * 3. Vidgen 2.2 Dual-Expert Schedule Splitter with 0.875 Boundary & Memory Offload Tracker
  * 4. Rectified-Flow Reflow & 4-to-8 Step Distillation Solver
  * 5. Long Video Chunked Overlap Planner with Cosine Temporal Blending
  * 6. Safety Moderation Suite & C2PA Provenance Manifest Generator
@@ -156,7 +156,7 @@ export const MILESTONES: MilestoneItem[] = [
   {
     id: 'm4',
     milestone: 'M4',
-    title: 'LoRA Fine-Tune of Wan 1.3B on Custom Subject',
+    title: 'LoRA Fine-Tune of Vidgen 1.3B on Custom Subject',
     description: 'Parameter-efficient adaptation (rank 16-64) on 500-2000 clips for distinct style/character.',
     targetHardware: '1x RTX 3090 / A10G (24GB VRAM)',
     status: 'READY_TO_DEPLOY',
@@ -166,7 +166,7 @@ export const MILESTONES: MilestoneItem[] = [
     id: 'm5',
     milestone: 'M5',
     title: 'Full 256x256 Model on 100k-1M Clips',
-    description: 'Production Wan-class foundation video model with multi-node FSDP2 / Ulysses context parallelism.',
+    description: 'Production Vidgen-class foundation video model with multi-node FSDP2 / Ulysses context parallelism.',
     targetHardware: 'Cluster of 8x to 64x H100 GPUs',
     status: 'READY_TO_DEPLOY',
     metrics: 'MFU > 38.5%, 32,760 tokens/batch, 16 FPS photorealistic synthesis',
@@ -174,7 +174,7 @@ export const MILESTONES: MilestoneItem[] = [
 ];
 
 /**
- * Calculates LoRA parameter budget for Wan 1.3B and 14B models.
+ * Calculates LoRA parameter budget for Vidgen 1.3B and 14B models.
  */
 export function calculateLoRAParameters(
   baseModel: '1.3B' | '14B' | 'small' | 'tiny',
@@ -354,7 +354,7 @@ export function generateC2PAManifest(
 
   return {
     version: '2.1',
-    claimGenerator: 'VidGen Wan 2.1 Studio v1.0',
+    claimGenerator: 'VidGen 2.1 Studio v1.0',
     timestamp,
     format: 'video/mp4 (H.264 / 16 FPS)',
     provenanceHash,
@@ -363,7 +363,7 @@ export function generateC2PAManifest(
         label: 'c2pa.actions',
         details: {
           action: 'c2pa.created',
-          softwareAgent: 'VidGen Wan-2.1 Neural Video Pipeline',
+          softwareAgent: 'VidGen 2.1 Neural Video Pipeline',
           digitalSourceType: 'https://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia',
         },
       },

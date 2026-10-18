@@ -131,7 +131,7 @@ export const TextConditionerStudio: React.FC<TextConditionerStudioProps> = ({ cu
             <div className="text-xs text-amber-200">
               <strong className="font-bold text-white">Part 5 Pitfall: Caption Style Mismatch</strong>
               <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
-                Wan video diffusion models are trained on rich, dense multi-sentence captions describing subject, action,
+                Vidgen video diffusion models are trained on rich, dense multi-sentence captions describing subject, action,
                 setting, lighting, and camera trajectory. Passing raw short user prompts (e.g., <em>"A running dog"</em>) causes
                 out-of-distribution hallucinations and poor motion quality. The prompt rewriter expands short prompts into the
                 dense caption distribution used in training.
@@ -210,7 +210,7 @@ export const TextConditionerStudio: React.FC<TextConditionerStudioProps> = ({ cu
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-amber-400" />
                   <span className="text-xs font-bold text-white uppercase tracking-wider">
-                    Expanded Wan Dense Caption (Training Aligned)
+                    Expanded Vidgen Dense Caption (Training Aligned)
                   </span>
                 </div>
                 <button
@@ -313,16 +313,16 @@ export const TextConditionerStudio: React.FC<TextConditionerStudioProps> = ({ cu
               </div>
             </div>
 
-            {/* Wan QK-RMSNorm Deep Dive */}
+            {/* Vidgen QK-RMSNorm Deep Dive */}
             <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2 text-xs">
               <div className="font-bold text-white flex items-center gap-2">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Why QK-RMSNorm is Critical in Wan Cross-Attention:
+                Why QK-RMSNorm is Critical in Vidgen Cross-Attention:
               </div>
               <p className="text-slate-300 text-[11px] leading-relaxed">
                 In standard multi-head attention without normalization, inner products <code className="font-mono text-cyan-300 text-[10px]">QK^T / sqrt(d)</code> can grow
                 exponentially during training on high-dimensional text features, saturating the softmax function and causing
-                gradient vanishing or training divergence. Wan applies independent RMSNorm to query heads and key heads,
+                gradient vanishing or training divergence. Vidgen applies independent RMSNorm to query heads and key heads,
                 constraining head activations to the unit hypersphere and stabilizing long training runs.
               </p>
             </div>

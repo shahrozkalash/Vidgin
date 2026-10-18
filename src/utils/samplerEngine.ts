@@ -1,5 +1,5 @@
 /**
- * Sampler & Inference Engine for Wan Video Latent Diffusion (Part 8)
+ * Sampler & Inference Engine for Vidgen Video Latent Diffusion (Part 8)
  *
  * Implements:
  * - Shifted time schedules: sigma(u) = s*u / (1 + (s-1)*u)
@@ -70,7 +70,7 @@ export function validateDimensions(frames: number, height: number, width: number
     const validExamples = [1, 17, 33, 49, 65, 81];
     return {
       valid: false,
-      errorMessage: `Invalid frame count ${frames}. Must satisfy strict Wan constraint T = 4k + 1 (e.g. ${validExamples.join(', ')}).`,
+      errorMessage: `Invalid frame count ${frames}. Must satisfy strict Vidgen constraint T = 4k + 1 (e.g. ${validExamples.join(', ')}).`,
       latentT,
       latentH,
       latentW,

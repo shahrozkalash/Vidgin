@@ -57,34 +57,6 @@ export const PRESETS: Record<PresetKey, PresetConfig> = {
     targetTokensPerBatch: 151200,
     patchSize: [1, 2, 2],
   },
-  wan480p: {
-    key: 'wan480p',
-    name: 'Vidgen 480p',
-    tagline: 'Standard Production DiT',
-    resolution: '480x832',
-    height: 480,
-    width: 832,
-    baseFrames: 81,
-    tokens: 32760,
-    ditConfig: '30L / 1536D / 12H / 8960 FFN',
-    params: '~1.3B',
-    targetTokensPerBatch: 65520,
-    patchSize: [1, 2, 2],
-  },
-  wan14b: {
-    key: 'wan14b',
-    name: 'Vidgen 14B',
-    tagline: 'Flagship Cinematic DiT',
-    resolution: '720x1280',
-    height: 720,
-    width: 1280,
-    baseFrames: 81,
-    tokens: 75600,
-    ditConfig: '40L / 5120D / 40H / 13824 FFN',
-    params: '~14B',
-    targetTokensPerBatch: 151200,
-    patchSize: [1, 2, 2],
-  },
 };
 
 /**
@@ -132,7 +104,7 @@ export function getStandardBuckets(presetKey: PresetKey = 'tiny'): BucketSpec[] 
       [288, 224, '3:4'],
     ];
     videoFrames = [33];
-  } else if (presetKey === 'wan480p' || presetKey === 'vidgen480p') {
+  } else if (presetKey === 'vidgen480p') {
     resolutions = [
       [480, 832, '16:9'],
       [832, 480, '9:16'],
@@ -142,7 +114,7 @@ export function getStandardBuckets(presetKey: PresetKey = 'tiny'): BucketSpec[] 
     ];
     videoFrames = [81];
   } else {
-    // wan14b
+    // vidgen14b
     resolutions = [
       [720, 1280, '16:9'],
       [1280, 720, '9:16'],

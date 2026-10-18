@@ -262,7 +262,7 @@ export const VisualBatchInspector: React.FC<VisualBatchInspectorProps> = ({ curr
             <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
             <div>
               <div className="text-[10px] text-slate-400 uppercase font-semibold">Target FPS</div>
-              <div className="text-xs font-mono font-bold text-white">16.0 (Wan Native)</div>
+              <div className="text-xs font-mono font-bold text-white">16.0 (Vidgen Native)</div>
             </div>
           </div>
         </div>

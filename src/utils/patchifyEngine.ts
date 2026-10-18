@@ -2,8 +2,8 @@ import { PatchifyCalcResult, RoPEPartitionSpec, PresetKey } from '../types/vidge
 
 /**
  * Calculates spacetime tokens given raw video dimensions and patch size.
- * Wan 4x temporal VAE: t = (T - 1) // 4 + 1
- * Wan 8x spatial VAE:  h = H // 8, w = W // 8
+ * Vidgen 4x temporal VAE: t = (T - 1) // 4 + 1
+ * Vidgen 8x spatial VAE:  h = H // 8, w = W // 8
  * Patchify: grid_t = t // pt, grid_h = h // ph, grid_w = w // pw
  * Tokens N = grid_t * grid_h * grid_w
  */
@@ -38,13 +38,12 @@ export function calculatePatchTokens(
     gridW,
     totalTokens,
     isVidgen480pTarget: isTarget,
-    isWan480pTarget: isTarget,
   };
 }
 
 /**
  * Partition head_dim into (dt, dh, dw) with all even components.
- * Wan standard: head_dim = 128 -> (44, 42, 42)
+ * Vidgen standard: head_dim = 128 -> (44, 42, 42)
  * Tiny preset:  head_dim = 64  -> (22, 22, 20)
  */
 export function getRoPEPartition(headDim: number = 128): RoPEPartitionSpec {

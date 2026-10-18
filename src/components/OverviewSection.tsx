@@ -69,10 +69,10 @@ export const OverviewSection: React.FC = () => {
                     {item.badge}
                   </span>
                 </div>
-                <h3 className="text-base font-semibold text-white">
+                <h3 className="text-lg font-semibold text-white">
                   {item.title}
                 </h3>
-                <p className="text-sm text-slate-300 leading-relaxed">
+                <p className="text-base text-slate-300 leading-relaxed">
                   {item.desc}
                 </p>
               </div>

@@ -24,8 +24,6 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* Streamlined Header */}
       <Navbar
-        currentPreset={currentPreset}
-        onPresetChange={setCurrentPreset}
         activeSection={activeSection}
         onSectionChange={scrollToSection}
       />

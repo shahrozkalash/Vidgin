@@ -1,6 +1,6 @@
 /**
- * DiT Backbone Utility Engine for Wan Video Latent Diffusion
- * Simulates Wan-style block flow, parameter breakdowns, adaLN-Zero modulation,
+ * DiT Backbone Utility Engine for Vidgen Video Latent Diffusion
+ * Simulates Vidgen-style block flow, parameter breakdowns, adaLN-Zero modulation,
  * overfit training curve on synthetic clips, and precision comparisons.
  */
 
@@ -60,28 +60,6 @@ export const DIT_PRESET_CONFIGS: Record<PresetKey, DiTBlockConfig> = {
     inChannels: 16,
     outChannels: 16,
   },
-  wan480p: {
-    numLayers: 30,
-    hiddenDim: 1536,
-    numHeads: 12,
-    headDim: 128,
-    ffnDim: 8960,
-    textDim: 4096,
-    patchSize: [1, 2, 2],
-    inChannels: 16,
-    outChannels: 16,
-  },
-  wan14b: {
-    numLayers: 40,
-    hiddenDim: 5120,
-    numHeads: 40,
-    headDim: 128,
-    ffnDim: 13824,
-    textDim: 4096,
-    patchSize: [1, 2, 2],
-    inChannels: 16,
-    outChannels: 16,
-  },
   vidgen480p: {
     numLayers: 30,
     hiddenDim: 1536,
@@ -107,7 +85,7 @@ export const DIT_PRESET_CONFIGS: Record<PresetKey, DiTBlockConfig> = {
 };
 
 /**
- * Calculate rigorous parameter count for Wan DiT architecture.
+ * Calculate rigorous parameter count for Vidgen DiT architecture.
  */
 export function calculateDiTParameters(cfg: DiTBlockConfig, presetKey: PresetKey): DiTParamBreakdown {
   const { numLayers, hiddenDim, numHeads, headDim, ffnDim, textDim, patchSize, inChannels, outChannels } = cfg;
@@ -149,16 +127,14 @@ export function calculateDiTParameters(cfg: DiTBlockConfig, presetKey: PresetKey
 
   const totalParams = patchEmbed + timestepEmbedder + textProjector + allBlocks + outputHead;
 
-  // Savings calculation: standard per-block MLP vs Wan shared projection
+  // Savings calculation: standard per-block MLP vs Vidgen shared projection
   const standardMlpMod = numLayers * (hiddenDim * 6 * hiddenDim + 6 * hiddenDim);
-  const wanMod = sharedProj + (numLayers * blockModPerBlock);
-  const sharedModSavingsPercent = Math.max(0, ((standardMlpMod - wanMod) / standardMlpMod) * 100);
+  const vidgenMod = sharedProj + (numLayers * blockModPerBlock);
+  const sharedModSavingsPercent = Math.max(0, ((standardMlpMod - vidgenMod) / standardMlpMod) * 100);
 
   const nominals: Record<PresetKey, { label: string; count: number }> = {
     tiny: { label: '~20M', count: 20_000_000 },
     small: { label: '~270M', count: 270_000_000 },
-    wan480p: { label: '~1.3B', count: 1_350_000_000 },
-    wan14b: { label: '~14B', count: 14_000_000_000 },
     vidgen480p: { label: '~1.3B', count: 1_350_000_000 },
     vidgen14b: { label: '~14B', count: 14_000_000_000 },
   };

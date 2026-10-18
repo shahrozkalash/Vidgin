@@ -5,16 +5,16 @@ export interface VAECompressionSpec {
   temporalDownsample: number; // 4x (T = 4k + 1 -> k + 1)
   spatialDownsample: number;  // 8x (H/8, W/8)
   latentChannels: number;     // 16
-  license: string;            // Apache 2.0 (WanX open release)
-  author: string;             // Wan 2.1 Latent Diffusion
+  license: string;            // Apache 2.0 (Open Video release)
+  author: string;             // Vidgen 2.1 Latent Diffusion
 }
 
-export const WAN_VAE_SPEC: VAECompressionSpec = {
+export const VIDGEN_VAE_SPEC: VAECompressionSpec = {
   temporalDownsample: 4,
   spatialDownsample: 8,
   latentChannels: 16,
   license: 'Apache 2.0 (Permissive Commercial & Research)',
-  author: 'Alibaba WanX Team',
+  author: 'Vidgen Team',
 };
 
 /**

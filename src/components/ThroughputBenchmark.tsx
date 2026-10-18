@@ -56,7 +56,7 @@ export const ThroughputBenchmark: React.FC<ThroughputBenchmarkProps> = ({ curren
             </div>
             <p className="text-xs text-slate-300 max-w-3xl">
               Acceptance criteria: <strong className="text-white">"Throughput is above the training step rate"</strong> so
-              the training loop never starves the GPU. Contrast naive un-bucketed loading vs Wan bucketing and
+              the training loop never starves the GPU. Contrast naive un-bucketed loading vs Vidgen bucketing and
               memory-mapped precompute caching.
             </p>
           </div>
@@ -116,12 +116,12 @@ export const ThroughputBenchmark: React.FC<ThroughputBenchmarkProps> = ({ curren
           </div>
         </div>
 
-        {/* Wan Spacetime Multi-Aspect Bucketing */}
+        {/* Vidgen Spacetime Multi-Aspect Bucketing */}
         <div className="bg-slate-900/90 p-5 rounded-2xl border border-cyan-500/30 flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">
-                2. Wan Bucketing
+                2. Vidgen Bucketing
               </span>
               <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/40">
                 Zero Padding Waste

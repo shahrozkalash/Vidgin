@@ -169,14 +169,14 @@ print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags.
               />
 
               {/* Sample Prompts Pills */}
-              <div className="flex flex-wrap gap-1.5 mt-2">
+              <div className="flex flex-wrap gap-2 mt-2.5">
                 {samplePrompts.map((sp, idx) => (
                   <button
                     key={idx}
                     onClick={() => setPrompt(sp)}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 transition-colors truncate max-w-full"
+                    className="min-h-[44px] text-xs px-3 py-2 rounded-xl bg-slate-850 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors cursor-pointer text-left"
                   >
-                    💡 {sp.slice(0, 40)}...
+                    💡 {sp.slice(0, 44)}...
                   </button>
                 ))}
               </div>
@@ -290,14 +290,14 @@ print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags.
             {/* Thumbs & Feedback Widget (Integrated from feedback_widget.py) */}
             <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-200">
+                <span className="text-sm font-semibold text-slate-200">
                   Human Feedback Widget
                 </span>
                 <button
                   onClick={() => setIsCompareMode((prev) => !prev)}
-                  className="min-h-[32px] px-2 py-1 text-[11px] font-medium rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 transition-colors"
+                  className="min-h-[44px] px-3 py-2 text-xs font-medium rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
-                  <Columns className="w-3 h-3 text-cyan-400" />
+                  <Columns className="w-3.5 h-3.5 text-cyan-400" />
                   <span>{isCompareMode ? 'Standard Mode' : 'Compare Mode'}</span>
                 </button>
               </div>
@@ -358,21 +358,21 @@ print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags.
 
                   {/* Quick issue tags */}
                   <div className="pt-1">
-                    <span className="text-[11px] text-slate-400 block mb-1.5 flex items-center gap-1">
-                      <Tag className="w-3 h-3 text-slate-400" />
+                    <span className="text-xs text-slate-400 block mb-2 flex items-center gap-1">
+                      <Tag className="w-3.5 h-3.5 text-slate-400" />
                       <span>Quick diagnostic tags:</span>
                     </span>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-wrap gap-2">
                       {quickTags.map((tag) => {
                         const isTagSelected = selectedTags.includes(tag);
                         return (
                           <button
                             key={tag}
                             onClick={() => toggleTag(tag)}
-                            className={`min-h-[32px] px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                            className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer ${
                               isTagSelected
                                 ? 'bg-amber-400/20 border border-amber-400/60 text-amber-300'
-                                : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                                : 'bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800'
                             }`}
                           >
                             {tag}

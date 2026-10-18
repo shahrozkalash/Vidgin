@@ -1,5 +1,5 @@
 /**
- * Targeted Improvements Engine (Part 12: Beating Wan)
+ * Targeted Improvements Engine (Part 12: Architectural Enhancements)
  *
  * Implements interactive models, calculations, and ablation metrics for:
  * 12.1 Long Video: Block-Causal Masking & KV Cache Rollout
