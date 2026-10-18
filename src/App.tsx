@@ -12,10 +12,14 @@ import { PatchifyRoPEStudio } from './components/PatchifyRoPEStudio';
 import { TextConditionerStudio } from './components/TextConditionerStudio';
 import { DiTStudio } from './components/DiTStudio';
 import { SamplerStudio } from './components/SamplerStudio';
+import { ScalingStudio } from './components/ScalingStudio';
+import { EvaluationStudio } from './components/EvaluationStudio';
+import { ExtensionStudio } from './components/ExtensionStudio';
+import { ImprovementStudio } from './components/ImprovementStudio';
 
 export default function App() {
   const [currentPreset, setCurrentPreset] = useState<PresetKey>('tiny');
-  const [activeTab, setActiveTab] = useState<string>('sampler_pipeline');
+  const [activeTab, setActiveTab] = useState<string>('targeted_improvements');
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
@@ -29,6 +33,22 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeTab === 'targeted_improvements' && (
+          <ImprovementStudio />
+        )}
+
+        {activeTab === 'extensions_studio' && (
+          <ExtensionStudio />
+        )}
+
+        {activeTab === 'evaluation_vbench' && (
+          <EvaluationStudio />
+        )}
+
+        {activeTab === 'scaling_efficiency' && (
+          <ScalingStudio currentPreset={currentPreset} />
+        )}
+
         {activeTab === 'sampler_pipeline' && (
           <SamplerStudio currentPreset={currentPreset} />
         )}
