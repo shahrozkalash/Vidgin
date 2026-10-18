@@ -13,6 +13,7 @@ import { EditorPreviewPlayer } from './EditorPreviewPlayer';
 import { EditorInspector } from './EditorInspector';
 import { EditorTimeline } from './EditorTimeline';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+import { Sparkles, Brain, Film, Sliders } from 'lucide-react';
 
 interface EditorViewProps {
   onSwitchToOverview: () => void;
@@ -21,18 +22,86 @@ interface EditorViewProps {
 export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) => {
   const FPS = 16; // Vidgen standard 16 fps
 
+  // Viewport tracking for compact vs wide layout
+  const [windowDimensions, setWindowDimensions] = useState({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 800,
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowDimensions({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isCompactMode =
+    windowDimensions.width < 1100 ||
+    (windowDimensions.height > windowDimensions.width && windowDimensions.width < 1200);
+
   // Project state
   const [projectName, setProjectName] = useState('Nordic Wilderness - Ep 1');
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [zoom, setZoom] = useState(60); // px per second
+  const [zoom, setZoom] = useState(55); // px per second
   const [selectedClipId, setSelectedClipId] = useState<string | null>('clip-1');
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
+  // Inspector collapsible state (auto-collapse below 1100px)
+  const [isInspectorOpen, setIsInspectorOpen] = useState(windowDimensions.width >= 1100);
+
+  useEffect(() => {
+    if (windowDimensions.width < 1100) {
+      setIsInspectorOpen(false);
+    }
+  }, [windowDimensions.width]);
+
+  // Timeline height state (default about 32% of viewport, min 220px)
+  const [timelineHeight, setTimelineHeight] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      return Math.max(220, Math.min(360, Math.floor(window.innerHeight * 0.32)));
+    }
+    return 240;
+  });
+
+  const isResizingTimelineRef = useRef(false);
+  const startYRef = useRef(0);
+  const startHeightRef = useRef(0);
+
+  const handleTimelineResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingTimelineRef.current = true;
+    startYRef.current = e.clientY;
+    startHeightRef.current = timelineHeight;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!isResizingTimelineRef.current) return;
+      const delta = startYRef.current - moveEvent.clientY;
+      const newHeight = Math.max(220, Math.min(window.innerHeight * 0.55, startHeightRef.current + delta));
+      setTimelineHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      isResizingTimelineRef.current = false;
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
   // Left Panel State
   const [activeTab, setActiveTab] = useState<LeftPanelTab>('generate');
+  // Drawer tab for compact layout: 'generate' | 'memory' | 'clips' | 'inspector'
+  const [compactDrawerTab, setCompactDrawerTab] = useState<'generate' | 'memory' | 'clips' | 'inspector'>('generate');
+
   const [prompt, setPrompt] = useState(
-    'A cinematic red fox exploring misty birch woods at dawn, cinematic lighting, photorealistic 8k'
+    'A cinematic red fox exploring misty birch woods at dawn, volumetric morning sunlight, photorealistic 8k'
   );
   const [seed, setSeed] = useState(42109);
   const [isSeedLocked, setIsSeedLocked] = useState(true);
@@ -173,7 +242,6 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
   ]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
-  // Push to history helper
   const pushHistory = (newClips: EditorClip[], newAudio?: AudioClip[], newCaptions?: CaptionClip[], newTitle?: string) => {
     const nextSnapshot: EditorHistorySnapshot = {
       clips: newClips,
@@ -209,19 +277,16 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     }
   }, [historyIndex, history]);
 
-  // Compute total timeline duration
   const totalDuration = Math.max(
     15,
     ...clips.map((c) => c.startTime + c.duration),
     ...audioClips.map((a) => a.startTime + a.duration)
   );
 
-  // Find active clip at current playhead time
   const activeClip = clips.find(
     (c) => currentTime >= c.startTime && currentTime < c.startTime + c.duration
   ) || null;
 
-  // Selected clip object
   const selectedClip = clips.find((c) => c.id === selectedClipId) || null;
 
   // Playback animation loop
@@ -242,7 +307,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
           const next = prev + deltaSec;
           if (next >= totalDuration) {
             setIsPlaying(false);
-            return 0; // Return to start upon finish
+            return 0;
           }
           return next;
         });
@@ -257,24 +322,20 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     };
   }, [isPlaying, totalDuration]);
 
-  // Step frame forward or backward
   const handleStepFrame = useCallback((direction: -1 | 1) => {
     setIsPlaying(false);
     const frameDuration = 1 / FPS;
     setCurrentTime((prev) => Math.max(0, Math.min(totalDuration, prev + direction * frameDuration)));
   }, [totalDuration]);
 
-  // Toggle Play / Pause
   const handleTogglePlay = useCallback(() => {
     setIsPlaying((prev) => !prev);
   }, []);
 
-  // Split selected clip at playhead
   const handleSplitClip = useCallback((clipId: string) => {
     const target = clips.find((c) => c.id === clipId);
     if (!target) return;
 
-    // Check if playhead is strictly inside the clip duration
     if (currentTime <= target.startTime + 0.1 || currentTime >= target.startTime + target.duration - 0.1) {
       return;
     }
@@ -304,7 +365,6 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     pushHistory(newClips);
   }, [clips, currentTime]);
 
-  // Delete selected clip
   const handleDeleteClip = useCallback((clipId: string) => {
     const newClips = clips.filter((c) => c.id !== clipId);
     setClips(newClips);
@@ -312,30 +372,25 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     pushHistory(newClips);
   }, [clips]);
 
-  // Update clip prompt
   const handleUpdateClipPrompt = (clipId: string, newPrompt: string) => {
     const newClips = clips.map((c) => (c.id === clipId ? { ...c, prompt: newPrompt } : c));
     setClips(newClips);
     pushHistory(newClips);
   };
 
-  // Toggle Memory Lock
   const handleToggleMemoryLock = (id: string) => {
     setMemoryItems((prev) =>
       prev.map((item) => (item.id === id ? { ...item, locked: !item.locked } : item))
     );
   };
 
-  // Toggle Memory Pin
   const handleToggleMemoryPin = (id: string) => {
     setMemoryItems((prev) =>
       prev.map((item) => (item.id === id ? { ...item, pinned: !item.pinned } : item))
     );
   };
 
-  // Generate button click (Batch 1 shell trigger)
   const handleGenerateClick = () => {
-    // Adds a clip block to the Video track
     const newClipId = `clip-${Date.now()}`;
     const newStartTime = Math.max(0, ...clips.map((c) => c.startTime + c.duration));
     const newClip: EditorClip = {
@@ -365,26 +420,24 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     }
   };
 
-  // Global Keyboard Shortcuts
+  // Keyboard Shortcuts listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input or textarea
       const target = e.target as HTMLElement;
       if (
         target.tagName === 'INPUT' ||
         target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
         target.isContentEditable
       ) {
         return;
       }
 
-      // Space: Play / Pause
       if (e.code === 'Space') {
         e.preventDefault();
         handleTogglePlay();
       }
 
-      // S: Split at playhead
       if (e.key === 's' || e.key === 'S') {
         if (!e.ctrlKey && !e.metaKey && selectedClipId) {
           e.preventDefault();
@@ -392,7 +445,6 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
         }
       }
 
-      // Delete / Backspace: Remove clip
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedClipId) {
           e.preventDefault();
@@ -400,32 +452,27 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
         }
       }
 
-      // Left Arrow: Step backward 1 frame
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
         handleStepFrame(-1);
       }
 
-      // Right Arrow: Step forward 1 frame
       if (e.key === 'ArrowRight') {
         e.preventDefault();
         handleStepFrame(1);
       }
 
-      // Home: Go to 0
       if (e.key === 'Home') {
         e.preventDefault();
         setIsPlaying(false);
         setCurrentTime(0);
       }
 
-      // Undo: Ctrl/Cmd + Z
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
         handleUndo();
       }
 
-      // Redo: Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y
       if (
         ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z')) ||
         ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y'))
@@ -447,29 +494,232 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
     handleRedo,
   ]);
 
-  return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
-      {/* Top Bar */}
-      <EditorTopBar
-        projectName={projectName}
-        onProjectNameChange={(name) => {
-          setProjectName(name);
-          pushHistory(clips, undefined, undefined, name);
-        }}
-        canUndo={historyIndex > 0}
-        canRedo={historyIndex < history.length - 1}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        onExport={() => alert(`Exporting "${projectName}" (Vidgen 480p 16FPS Render)...`)}
-        onOpenShortcuts={() => setIsShortcutsOpen(true)}
-        onSwitchToOverview={onSwitchToOverview}
-        totalDuration={totalDuration}
-        fps={FPS}
-      />
+  // ================= COMPACT / TALL SCREEN LAYOUT (<1100px or portrait) =================
+  if (isCompactMode) {
+    return (
+      <div className="h-[100dvh] w-screen flex flex-col bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
+        {/* Top Bar */}
+        <EditorTopBar
+          projectName={projectName}
+          onProjectNameChange={(name) => {
+            setProjectName(name);
+            pushHistory(clips, undefined, undefined, name);
+          }}
+          canUndo={historyIndex > 0}
+          canRedo={historyIndex < history.length - 1}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onExport={() => alert(`Exporting "${projectName}" (Vidgen 480p 16FPS Render)...`)}
+          onOpenShortcuts={() => setIsShortcutsOpen(true)}
+          onSwitchToOverview={onSwitchToOverview}
+          totalDuration={totalDuration}
+          fps={FPS}
+          isInspectorOpen={false}
+          onToggleInspector={() => {}}
+          isCompactMode={true}
+        />
 
-      {/* Center 3-Column Studio Area */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* Left Panel: Tabs (Generate, Memory, Clips) */}
+        {/* 1. Preview Player on Top (takes 35-40% height) */}
+        <div className="h-[36vh] min-h-[220px] max-h-[380px] w-full shrink-0 overflow-hidden bg-slate-950 flex flex-col justify-center">
+          <EditorPreviewPlayer
+            currentTime={currentTime}
+            totalDuration={totalDuration}
+            isPlaying={isPlaying}
+            onTogglePlay={handleTogglePlay}
+            onSeek={(time) => {
+              setIsPlaying(false);
+              setCurrentTime(time);
+            }}
+            onStepFrame={handleStepFrame}
+            onResetTime={() => {
+              setIsPlaying(false);
+              setCurrentTime(0);
+            }}
+            activeClip={activeClip}
+            fps={FPS}
+          />
+        </div>
+
+        {/* 2. Timeline in the Middle (~220px) */}
+        <div className="h-[220px] w-full shrink-0 overflow-hidden">
+          <EditorTimeline
+            currentTime={currentTime}
+            totalDuration={totalDuration}
+            zoom={zoom}
+            onZoomChange={setZoom}
+            onSeek={(time) => {
+              setIsPlaying(false);
+              setCurrentTime(time);
+            }}
+            clips={clips}
+            selectedClipId={selectedClipId}
+            onSelectClip={(id) => setSelectedClipId(id)}
+            onSplitClip={handleSplitClip}
+            onDeleteClip={handleDeleteClip}
+            audioClips={audioClips}
+            captionClips={captionClips}
+            fps={FPS}
+            height={220}
+            isCompactMode={true}
+          />
+        </div>
+
+        {/* 3. Bottom Drawer: Tabbed interface for Generate / Memory / Clips / Inspector */}
+        <div className="flex-1 min-h-[200px] w-full bg-slate-900 border-t border-slate-800 flex flex-col overflow-hidden">
+          {/* Drawer Tabs */}
+          <div className="grid grid-cols-4 bg-slate-950 border-b border-slate-800 p-1 gap-1 shrink-0 text-xs">
+            <button
+              onClick={() => {
+                setCompactDrawerTab('generate');
+                setActiveTab('generate');
+              }}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md font-medium transition-all ${
+                compactDrawerTab === 'generate'
+                  ? 'bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Generate</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setCompactDrawerTab('memory');
+                setActiveTab('memory');
+              }}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md font-medium transition-all ${
+                compactDrawerTab === 'memory'
+                  ? 'bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Brain className="w-3.5 h-3.5 text-sky-400" />
+              <span>Memory</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setCompactDrawerTab('clips');
+                setActiveTab('clips');
+              }}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md font-medium transition-all ${
+                compactDrawerTab === 'clips'
+                  ? 'bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Film className="w-3.5 h-3.5 text-amber-400" />
+              <span>Clips</span>
+            </button>
+
+            <button
+              onClick={() => setCompactDrawerTab('inspector')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md font-medium transition-all ${
+                compactDrawerTab === 'inspector'
+                  ? 'bg-slate-800 text-cyan-400 border border-slate-700/60 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Inspector</span>
+            </button>
+          </div>
+
+          {/* Drawer Active Tab Body */}
+          <div className="flex-1 overflow-y-auto">
+            {compactDrawerTab === 'inspector' ? (
+              <EditorInspector
+                selectedClip={selectedClip}
+                onUpdateClipPrompt={handleUpdateClipPrompt}
+                onSplitClip={handleSplitClip}
+                onDeleteClip={handleDeleteClip}
+                fps={FPS}
+              />
+            ) : (
+              <EditorLeftPanel
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                prompt={prompt}
+                onPromptChange={setPrompt}
+                seed={seed}
+                onSeedChange={setSeed}
+                isSeedLocked={isSeedLocked}
+                onToggleSeedLock={() => setIsSeedLocked(!isSeedLocked)}
+                duration={duration}
+                onDurationChange={setDuration}
+                onGenerateClick={handleGenerateClick}
+                memoryItems={memoryItems}
+                onToggleMemoryLock={handleToggleMemoryLock}
+                onToggleMemoryPin={handleToggleMemoryPin}
+                clips={clips}
+                onSelectClip={(id) => {
+                  setSelectedClipId(id);
+                  const target = clips.find((c) => c.id === id);
+                  if (target) setCurrentTime(target.startTime);
+                }}
+                selectedClipId={selectedClipId}
+                hideTabBar={true}
+              />
+            )}
+          </div>
+        </div>
+
+        <KeyboardShortcutsModal
+          isOpen={isShortcutsOpen}
+          onClose={() => setIsShortcutsOpen(false)}
+        />
+      </div>
+    );
+  }
+
+  // ================= WIDE DESKTOP LAYOUT (>=1100px in landscape) =================
+  // Using CSS Grid with named areas:
+  // "top top top"
+  // "left preview inspector"
+  // "timeline timeline timeline"
+  const gridTemplateAreas = isInspectorOpen
+    ? `"top top top" "left preview inspector" "timeline timeline timeline"`
+    : `"top top" "left preview" "timeline timeline"`;
+
+  const gridTemplateColumns = isInspectorOpen
+    ? 'clamp(240px, 24vw, 320px) minmax(360px, 1fr) clamp(220px, 20vw, 280px)'
+    : 'clamp(240px, 24vw, 320px) minmax(360px, 1fr)';
+
+  return (
+    <div
+      className="h-[100dvh] w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden select-none grid"
+      style={{
+        gridTemplateAreas,
+        gridTemplateColumns,
+        gridTemplateRows: `auto 1fr ${timelineHeight}px`,
+      }}
+    >
+      {/* Top Bar Area */}
+      <div style={{ gridArea: 'top' }} className="w-full overflow-hidden">
+        <EditorTopBar
+          projectName={projectName}
+          onProjectNameChange={(name) => {
+            setProjectName(name);
+            pushHistory(clips, undefined, undefined, name);
+          }}
+          canUndo={historyIndex > 0}
+          canRedo={historyIndex < history.length - 1}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onExport={() => alert(`Exporting "${projectName}" (Vidgen 480p 16FPS Render)...`)}
+          onOpenShortcuts={() => setIsShortcutsOpen(true)}
+          onSwitchToOverview={onSwitchToOverview}
+          totalDuration={totalDuration}
+          fps={FPS}
+          isInspectorOpen={isInspectorOpen}
+          onToggleInspector={() => setIsInspectorOpen(!isInspectorOpen)}
+          isCompactMode={false}
+        />
+      </div>
+
+      {/* Left Panel Area (Generate / Memory / Clips) */}
+      <div style={{ gridArea: 'left' }} className="h-full overflow-hidden">
         <EditorLeftPanel
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -493,8 +743,10 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
           }}
           selectedClipId={selectedClipId}
         />
+      </div>
 
-        {/* Center: Canvas Video Preview Player */}
+      {/* Center Preview Player Area */}
+      <div style={{ gridArea: 'preview' }} className="h-full overflow-hidden min-w-[360px]">
         <EditorPreviewPlayer
           currentTime={currentTime}
           totalDuration={totalDuration}
@@ -512,36 +764,46 @@ export const EditorView: React.FC<EditorViewProps> = ({ onSwitchToOverview }) =>
           activeClip={activeClip}
           fps={FPS}
         />
-
-        {/* Right Panel: Clip Inspector */}
-        <EditorInspector
-          selectedClip={selectedClip}
-          onUpdateClipPrompt={handleUpdateClipPrompt}
-          onSplitClip={handleSplitClip}
-          onDeleteClip={handleDeleteClip}
-          fps={FPS}
-        />
       </div>
 
-      {/* Bottom Panel: Multi-track Timeline */}
-      <EditorTimeline
-        currentTime={currentTime}
-        totalDuration={totalDuration}
-        zoom={zoom}
-        onZoomChange={setZoom}
-        onSeek={(time) => {
-          setIsPlaying(false);
-          setCurrentTime(time);
-        }}
-        clips={clips}
-        selectedClipId={selectedClipId}
-        onSelectClip={(id) => setSelectedClipId(id)}
-        onSplitClip={handleSplitClip}
-        onDeleteClip={handleDeleteClip}
-        audioClips={audioClips}
-        captionClips={captionClips}
-        fps={FPS}
-      />
+      {/* Right Inspector Area (if open) */}
+      {isInspectorOpen && (
+        <div style={{ gridArea: 'inspector' }} className="h-full overflow-hidden">
+          <EditorInspector
+            selectedClip={selectedClip}
+            onUpdateClipPrompt={handleUpdateClipPrompt}
+            onSplitClip={handleSplitClip}
+            onDeleteClip={handleDeleteClip}
+            fps={FPS}
+            onClose={() => setIsInspectorOpen(false)}
+          />
+        </div>
+      )}
+
+      {/* Bottom Timeline Area */}
+      <div style={{ gridArea: 'timeline' }} className="w-full overflow-hidden">
+        <EditorTimeline
+          currentTime={currentTime}
+          totalDuration={totalDuration}
+          zoom={zoom}
+          onZoomChange={setZoom}
+          onSeek={(time) => {
+            setIsPlaying(false);
+            setCurrentTime(time);
+          }}
+          clips={clips}
+          selectedClipId={selectedClipId}
+          onSelectClip={(id) => setSelectedClipId(id)}
+          onSplitClip={handleSplitClip}
+          onDeleteClip={handleDeleteClip}
+          audioClips={audioClips}
+          captionClips={captionClips}
+          fps={FPS}
+          height={timelineHeight}
+          onResizeStart={handleTimelineResizeStart}
+          isCompactMode={false}
+        />
+      </div>
 
       {/* Keyboard Shortcuts Dialog */}
       <KeyboardShortcutsModal

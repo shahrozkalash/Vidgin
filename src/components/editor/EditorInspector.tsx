@@ -1,18 +1,15 @@
 import React, { useState } from 'react';
 import {
   Sliders,
-  Sparkles,
   Link2,
   Unlink,
   Scissors,
   Trash2,
   Clock,
-  Dice5,
   Copy,
   CheckCircle2,
-  ShieldCheck,
-  AlertTriangle,
-  Film
+  Film,
+  X
 } from 'lucide-react';
 import { EditorClip } from '../../types/editor';
 
@@ -22,6 +19,7 @@ interface EditorInspectorProps {
   onSplitClip: (clipId: string) => void;
   onDeleteClip: (clipId: string) => void;
   fps?: number;
+  onClose?: () => void;
 }
 
 export const EditorInspector: React.FC<EditorInspectorProps> = ({
@@ -30,25 +28,37 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   onSplitClip,
   onDeleteClip,
   fps = 16,
+  onClose,
 }) => {
   const [isCopiedSeed, setIsCopiedSeed] = useState(false);
 
   if (!selectedClip) {
     return (
-      <div className="w-80 md:w-84 bg-slate-900 border-l border-slate-800 flex flex-col h-full shrink-0 select-none p-5 overflow-y-auto">
-        <div className="flex items-center gap-2 pb-3 border-b border-slate-800 text-slate-300 font-semibold text-xs">
-          <Sliders className="w-4 h-4 text-slate-400" />
-          <span>Clip Inspector</span>
+      <div className="w-full h-full bg-slate-900 border-l border-slate-800 flex flex-col shrink-0 select-none p-4 overflow-y-auto">
+        <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-slate-300 font-semibold text-xs">
+          <div className="flex items-center gap-1.5">
+            <Sliders className="w-3.5 h-3.5 text-slate-400" />
+            <span>Inspector</span>
+          </div>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded"
+              title="Close inspector"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center text-center p-6 space-y-3">
-          <div className="w-12 h-12 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-slate-600">
-            <Film className="w-6 h-6 stroke-[1.5]" />
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-4 space-y-2">
+          <div className="w-10 h-10 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-slate-600">
+            <Film className="w-5 h-5 stroke-[1.5]" />
           </div>
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             <h4 className="text-xs font-semibold text-slate-300">No Clip Selected</h4>
-            <p className="text-[11px] text-slate-500 leading-relaxed max-w-[220px]">
-              Click any clip on the timeline below to inspect its diffusion prompt, seed, continuity metrics, and timing parameters.
+            <p className="text-[10px] text-slate-500 leading-normal max-w-[180px]">
+              Click a clip on the timeline to inspect its prompt, seed, continuity, and duration.
             </p>
           </div>
         </div>
@@ -65,75 +75,86 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   const framesCount = Math.floor(selectedClip.duration * fps) + 1;
 
   return (
-    <div className="w-80 md:w-84 bg-slate-900 border-l border-slate-800 flex flex-col h-full shrink-0 select-none overflow-y-auto">
+    <div className="w-full h-full bg-slate-900 border-l border-slate-800 flex flex-col shrink-0 select-none overflow-y-auto">
       {/* Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Sliders className="w-4 h-4 text-cyan-400" />
-          <h3 className="text-xs font-semibold text-slate-200">Clip Inspector</h3>
+      <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-1">
+        <div className="flex items-center gap-1.5 truncate">
+          <Sliders className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+          <h3 className="text-xs font-semibold text-slate-200 truncate">Clip Inspector</h3>
         </div>
-        <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60">
-          Track {selectedClip.trackIndex === 0 ? 'Main' : `Branch ${selectedClip.trackIndex}`}
-        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60">
+            Track {selectedClip.trackIndex === 0 ? 'Main' : `Branch`}
+          </span>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded"
+              title="Close inspector"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="p-4 space-y-4">
-        {/* Title & Status */}
+      <div className="p-3 space-y-3 text-xs">
+        {/* Title */}
         <div>
-          <label className="text-[11px] font-semibold text-slate-400 block mb-1">Title</label>
-          <div className="text-xs font-medium text-slate-200 bg-slate-950 p-2.5 rounded-lg border border-slate-800 truncate">
+          <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">Title</label>
+          <div className="text-xs font-medium text-slate-200 bg-slate-950 p-2 rounded-lg border border-slate-800 truncate">
             {selectedClip.title}
           </div>
         </div>
 
         {/* Prompt */}
         <div>
-          <label className="text-[11px] font-semibold text-slate-400 block mb-1">Generation Prompt</label>
+          <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">Prompt</label>
           <textarea
             value={selectedClip.prompt}
             onChange={(e) => onUpdateClipPrompt(selectedClip.id, e.target.value)}
             rows={3}
-            className="w-full bg-slate-950 text-slate-100 text-xs p-2.5 rounded-lg border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none leading-relaxed resize-none transition-all"
+            className="w-full bg-slate-950 text-slate-100 text-xs p-2 rounded-lg border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none leading-relaxed resize-y"
           />
         </div>
 
         {/* Seed */}
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] font-semibold text-slate-400">Random Seed</label>
-            <span className="text-[10px] text-slate-500 font-mono">Euler ODE Deterministic</span>
+          <div className="flex items-center justify-between mb-0.5">
+            <label className="text-[10px] font-semibold text-slate-400">Seed</label>
+            <span className="text-[9px] text-slate-500 font-mono">Deterministic ODE</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-slate-950 px-3 py-2 rounded-lg border border-slate-800 text-xs font-mono text-cyan-300 tabular-nums">
+          <div className="flex items-center gap-1.5">
+            <div className="flex-1 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 text-xs font-mono text-cyan-300 tabular-nums">
               {selectedClip.seed}
             </div>
             <button
               onClick={handleCopySeed}
-              className="p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors"
+              className="p-1.5 bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors"
               title="Copy seed"
             >
-              {isCopiedSeed ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+              {isCopiedSeed ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
           </div>
         </div>
 
         {/* Timing Information */}
-        <div className="space-y-1.5 bg-slate-950/60 p-3 rounded-lg border border-slate-800/80">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-400 flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-slate-500" />
+        <div className="space-y-1 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80 text-[11px]">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400 flex items-center gap-1">
+              <Clock className="w-3 h-3 text-slate-500" />
               <span>Duration</span>
             </span>
             <span className="font-mono text-slate-200 tabular-nums">
-              {selectedClip.duration.toFixed(2)}s ({framesCount} frames)
+              {selectedClip.duration.toFixed(2)}s ({framesCount}f)
             </span>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-400">Start Time</span>
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Start</span>
             <span className="font-mono text-slate-300 tabular-nums">{selectedClip.startTime.toFixed(2)}s</span>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-400">End Time</span>
+          <div className="flex items-center justify-between text-slate-400">
+            <span>End</span>
             <span className="font-mono text-slate-300 tabular-nums">
               {(selectedClip.startTime + selectedClip.duration).toFixed(2)}s
             </span>
@@ -141,23 +162,23 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         </div>
 
         {/* Linked Continuity Section */}
-        <div className="space-y-2">
-          <label className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
-            <Link2 className="w-3.5 h-3.5 text-cyan-400" />
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-semibold text-slate-400 flex items-center gap-1">
+            <Link2 className="w-3 h-3 text-cyan-400" />
             <span>Continuity &amp; Linkage</span>
           </label>
 
           {selectedClip.linkedToClipId ? (
-            <div className="p-2.5 rounded-lg bg-cyan-950/30 border border-cyan-800/50 space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-cyan-300 font-medium">Continued from prior clip</span>
-                <span className="font-mono text-[10px] text-cyan-400 bg-cyan-950 px-1.5 py-0.5 rounded border border-cyan-800/80">
+            <div className="p-2 rounded-lg bg-cyan-950/30 border border-cyan-800/50 space-y-1 text-[11px]">
+              <div className="flex items-center justify-between">
+                <span className="text-cyan-300 font-medium">Linked to prior clip</span>
+                <span className="font-mono text-[9px] text-cyan-400 bg-cyan-950 px-1 py-0.5 rounded border border-cyan-800/80">
                   {selectedClip.linkedToClipId}
                 </span>
               </div>
 
               {selectedClip.continuity && (
-                <div className="space-y-1 pt-1 text-[11px]">
+                <div className="space-y-0.5 pt-1 text-[10px]">
                   <div className="flex items-center justify-between text-slate-400">
                     <span>Seam Smoothness</span>
                     <span className="font-mono text-emerald-400 tabular-nums">
@@ -171,7 +192,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-slate-400">
-                    <span>Color &amp; Lighting Drift</span>
+                    <span>Color &amp; Light Drift</span>
                     <span className="font-mono text-slate-300 tabular-nums">
                       {selectedClip.continuity.colorDrift.toFixed(1)}%
                     </span>
@@ -180,28 +201,28 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
               )}
             </div>
           ) : (
-            <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 flex items-center gap-2">
-              <Unlink className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span>Independent root clip (starts from Gaussian noise $x_0$)</span>
+            <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800 text-[10px] text-slate-400 flex items-center gap-1.5">
+              <Unlink className="w-3 h-3 text-slate-500 shrink-0" />
+              <span>Independent root clip</span>
             </div>
           )}
         </div>
 
         {/* Actions: Split / Delete */}
-        <div className="pt-2 border-t border-slate-800 space-y-2">
+        <div className="pt-1.5 border-t border-slate-800 space-y-1.5">
           <button
             onClick={() => onSplitClip(selectedClip.id)}
-            className="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-2 border border-slate-700/60 transition-colors"
+            className="w-full py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5 border border-slate-700/60 transition-colors"
           >
-            <Scissors className="w-3.5 h-3.5 text-amber-400" />
+            <Scissors className="w-3 h-3 text-amber-400" />
             <span>Split at Playhead (S)</span>
           </button>
 
           <button
             onClick={() => onDeleteClip(selectedClip.id)}
-            className="w-full py-2 px-3 rounded-lg bg-red-950/40 hover:bg-red-900/60 text-red-300 text-xs font-medium flex items-center justify-center gap-2 border border-red-800/50 transition-colors"
+            className="w-full py-1.5 px-2.5 rounded-lg bg-red-950/40 hover:bg-red-900/60 text-red-300 text-xs font-medium flex items-center justify-center gap-1.5 border border-red-800/50 transition-colors"
           >
-            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+            <Trash2 className="w-3 h-3 text-red-400" />
             <span>Delete Clip (Del)</span>
           </button>
         </div>
