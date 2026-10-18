@@ -7,10 +7,15 @@ import { DistributedSamplerSim } from './components/DistributedSamplerSim';
 import { PrecomputeStudio } from './components/PrecomputeStudio';
 import { ThroughputBenchmark } from './components/ThroughputBenchmark';
 import { Part2SpecsAndTests } from './components/Part2SpecsAndTests';
+import { VAEStudio } from './components/VAEStudio';
+import { PatchifyRoPEStudio } from './components/PatchifyRoPEStudio';
+import { TextConditionerStudio } from './components/TextConditionerStudio';
+import { DiTStudio } from './components/DiTStudio';
+import { SamplerStudio } from './components/SamplerStudio';
 
 export default function App() {
   const [currentPreset, setCurrentPreset] = useState<PresetKey>('tiny');
-  const [activeTab, setActiveTab] = useState<string>('batch_inspector');
+  const [activeTab, setActiveTab] = useState<string>('sampler_pipeline');
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">
@@ -24,6 +29,26 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeTab === 'sampler_pipeline' && (
+          <SamplerStudio currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'dit_backbone' && (
+          <DiTStudio currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'text_conditioner' && (
+          <TextConditionerStudio currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'patchify_rope' && (
+          <PatchifyRoPEStudio currentPreset={currentPreset} />
+        )}
+
+        {activeTab === 'vae' && (
+          <VAEStudio currentPreset={currentPreset} />
+        )}
+
         {activeTab === 'batch_inspector' && (
           <VisualBatchInspector currentPreset={currentPreset} />
         )}

@@ -1,7 +1,7 @@
 import React from 'react';
 import { PresetKey } from '../types/vidgen';
 import { PRESETS } from '../utils/bucketEngine';
-import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle } from 'lucide-react';
+import { Layers, Video, Cpu, Activity, Database, CheckCircle2, Sliders, PlayCircle, Grid, FileText, Sparkles } from 'lucide-react';
 
 interface NavbarProps {
   currentPreset: PresetKey;
@@ -19,12 +19,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   const preset = PRESETS[currentPreset];
 
   const navItems = [
+    { id: 'sampler_pipeline', label: 'Sampler & Inference (Part 8)', icon: Sparkles, badge: 'Prompt → MP4' },
+    { id: 'dit_backbone', label: 'DiT Backbone (Part 6)', icon: Cpu, badge: 'Full 3D adaLN-Zero' },
+    { id: 'text_conditioner', label: 'Text Conditioner (Part 5)', icon: FileText, badge: 'umT5 Rewriter' },
+    { id: 'patchify_rope', label: 'Patchifier & 3D RoPE (Part 4)', icon: Grid, badge: '32,760 Tokens' },
+    { id: 'vae', label: 'Video VAE (Part 3)', icon: Layers, badge: '4x8x8 16-Ch' },
     { id: 'batch_inspector', label: 'Visual Batch Dump', icon: PlayCircle, badge: 'Acceptance' },
     { id: 'bucketing', label: 'Spacetime Bucketing', icon: Layers, badge: '5 Ratios' },
     { id: 'sampler', label: 'Distributed Sampler', icon: Cpu, badge: 'Resumable' },
     { id: 'precompute', label: 'Precompute & Latents', icon: Database, badge: '16-Ch fp16' },
     { id: 'throughput', label: 'Throughput Benchmark', icon: Activity, badge: '>50 clips/s' },
-    { id: 'specs_tests', label: 'Specs & Test Suite', icon: CheckCircle2, badge: 'Part 2' },
+    { id: 'specs_tests', label: 'Specs & Test Suite', icon: CheckCircle2, badge: 'All Parts' },
   ];
 
   return (
@@ -33,23 +38,23 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center justify-between h-16">
           {/* Logo & Branding */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-sky-600 to-indigo-600 p-0.5 shadow-lg shadow-cyan-500/20">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-sky-600 to-cyan-400 p-0.5 shadow-lg shadow-indigo-500/20">
               <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Video className="w-5 h-5 text-cyan-400" />
+                <Video className="w-5 h-5 text-indigo-400" />
               </div>
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold tracking-tight text-white text-base">VidGen Studio</span>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60">
-                  Part 2 Active
+                <span className="px-2 py-0.5 text-xs font-semibold rounded bg-indigo-950/80 text-indigo-400 border border-indigo-800/60">
+                  Part 8 Active
                 </span>
                 <span className="px-1.5 py-0.2 text-[10px] font-mono rounded bg-slate-800 text-slate-300">
-                  Wan Latent Diffusion
+                  Sampler &amp; Inference Pipeline
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">
-                Multi-Aspect Bucketing • Causal 3D VAE Precompute • Deterministic Distributed Sampler
+                Prompt In → MP4 Out • Shifted Flow ODE Solvers • CFG Extrapolation • VRAM Offloading • 16 FPS Wan Standard
               </p>
             </div>
           </div>

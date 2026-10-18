@@ -6,6 +6,8 @@ export const PRESETS: Record<PresetKey, PresetConfig> = {
     name: 'Tiny',
     tagline: 'Track A Prototyping & Verification',
     resolution: '64x64',
+    height: 64,
+    width: 64,
     baseFrames: 17, // k = 4 -> 4*4 + 1
     tokens: 80,
     ditConfig: '8L / 384D / 6H / 1536 FFN',
@@ -18,6 +20,8 @@ export const PRESETS: Record<PresetKey, PresetConfig> = {
     name: 'Small',
     tagline: 'Medium Scale Verification',
     resolution: '256x256',
+    height: 256,
+    width: 256,
     baseFrames: 33, // k = 8 -> 4*8 + 1
     tokens: 2304,
     ditConfig: '16L / 1024D / 16H / 4096 FFN',
@@ -30,6 +34,8 @@ export const PRESETS: Record<PresetKey, PresetConfig> = {
     name: 'Wan 480p',
     tagline: 'Standard Production DiT',
     resolution: '480x832',
+    height: 480,
+    width: 832,
     baseFrames: 81, // k = 20 -> 4*20 + 1
     tokens: 32760,
     ditConfig: '30L / 1536D / 12H / 8960 FFN',
@@ -42,6 +48,8 @@ export const PRESETS: Record<PresetKey, PresetConfig> = {
     name: 'Wan 14B',
     tagline: 'Flagship Cinematic DiT',
     resolution: '720x1280',
+    height: 720,
+    width: 1280,
     baseFrames: 81,
     tokens: 75600,
     ditConfig: '40L / 5120D / 40H / 13824 FFN',

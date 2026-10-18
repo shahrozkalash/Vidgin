@@ -19,6 +19,8 @@ export interface PresetConfig {
   name: string;
   tagline: string;
   resolution: string;
+  height: number;
+  width: number;
   baseFrames: number;
   tokens: number;
   ditConfig: string;
@@ -84,7 +86,69 @@ export interface PrecomputeShard {
   latentShape: [number, number, number, number]; // [16, t, h, w]
   dtypeLatent: 'float16' | 'float32';
   dtypeText: 'bfloat16' | 'float32';
-  textEmbDim: number;
   variants: ('latents_orig' | 'latents_hflip' | 'latents_crop2')[];
   shardSizeKb: number;
 }
+
+export interface VAERoundTripResult {
+  clipId: string;
+  mediaType: 'video' | 'image';
+  inputFrames: number;
+  latentFrames: number; // k + 1
+  latentShape: [number, number, number, number]; // [16, t, h, w]
+  psnrDb: number;
+  ssim: number;
+  lpips: number;
+  chunkedToleranceL1: number;
+  matchesTolerance: boolean;
+  unnormalizedFailure: boolean;
+}
+
+export interface VAEEvaluationReport {
+  numClips: number;
+  meanPsnrDb: number;
+  meanSsim: number;
+  meanLpips: number;
+  meanChunkedVsUnchunkedL1: number;
+  allShapesCorrect: boolean;
+  toleranceSatisfied: boolean;
+  clips: VAERoundTripResult[];
+}
+
+export interface PatchifyCalcResult {
+  frames: number;
+  height: number;
+  width: number;
+  patchSize: [number, number, number];
+  latentT: number;
+  latentH: number;
+  latentW: number;
+  gridT: number;
+  gridH: number;
+  gridW: number;
+  totalTokens: number;
+  isWan480pTarget: boolean;
+}
+
+export interface RoPEPartitionSpec {
+  headDim: number;
+  dt: number;
+  dh: number;
+  dw: number;
+  theta: number;
+}
+
+export interface ExpandedPromptResult {
+  original: string;
+  denseCaption: string;
+  style: string;
+  subject: string;
+  action: string;
+  setting: string;
+  lighting: string;
+  cameraMotion: string;
+  tokenCount: number;
+}
+
+
+
