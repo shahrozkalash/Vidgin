@@ -11,6 +11,7 @@ import {
   MemoryFilterTier,
   HardwareFilterEnv,
 } from './PresetSearchFilterBar';
+import { ParameterTooltip } from './ParameterTooltip';
 
 interface PresetsSectionProps {
   currentPreset: PresetKey;
@@ -270,89 +271,114 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {filteredPresetKeys.map((pk) => {
-            const cfg = PRESETS[pk] || PRESETS.tiny;
-            const meta = presetDetails[pk];
-            const filterMeta = PRESET_FILTER_METADATA[pk];
-            const isSelected = currentPreset === pk;
+        <div className="space-y-2">
+          {/* Subtle guide cue for interactive tooltips */}
+          <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+            <div className="flex items-center gap-1.5">
+              <span>Interactive Specs: Hover or tap any parameter</span>
+              <span className="text-cyan-400 font-medium">with an info icon</span>
+              <span>to view its video quality and generation time impact.</span>
+            </div>
+          </div>
 
-            return (
-              <button
-                key={pk}
-                onClick={() => onPresetChange(pk)}
-                className={`min-h-[44px] p-5 rounded-2xl text-left transition-all flex flex-col justify-between border cursor-pointer ${
-                  isSelected
-                    ? 'bg-slate-900 border-cyan-400/90 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-400/50'
-                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/90'
-                }`}
-              >
-                <div className="w-full space-y-3">
-                  {/* Header: Name & Selection indicator */}
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                      {cfg.params}
-                    </span>
-                    {isSelected ? (
-                      <span className="w-6 h-6 rounded-full bg-cyan-400 text-slate-950 flex items-center justify-center">
-                        <Check className="w-3.5 h-3.5 stroke-[3]" />
-                      </span>
-                    ) : (
-                      <span className="text-xs text-slate-500">Select</span>
-                    )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {filteredPresetKeys.map((pk, idx) => {
+              const cfg = PRESETS[pk] || PRESETS.tiny;
+              const meta = presetDetails[pk];
+              const filterMeta = PRESET_FILTER_METADATA[pk];
+              const isSelected = currentPreset === pk;
+              const align = idx >= 2 ? 'right' : 'left';
+
+              return (
+                <button
+                  key={pk}
+                  onClick={() => onPresetChange(pk)}
+                  className={`min-h-[44px] p-5 rounded-2xl text-left transition-all flex flex-col justify-between border cursor-pointer relative ${
+                    isSelected
+                      ? 'bg-slate-900 border-cyan-400/90 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-400/50'
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-900/90'
+                  }`}
+                >
+                  <div className="w-full space-y-3">
+                    {/* Header: Name & Selection indicator */}
+                    <div className="flex items-center justify-between">
+                      <ParameterTooltip param="params" side="bottom" align={align} showIcon={false}>
+                        <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                          {cfg.params}
+                        </span>
+                      </ParameterTooltip>
+
+                      {isSelected ? (
+                        <span className="w-6 h-6 rounded-full bg-cyan-400 text-slate-950 flex items-center justify-center">
+                          <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Select</span>
+                      )}
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-bold text-white">
+                        {cfg.name}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {cfg.tagline}
+                      </p>
+                    </div>
+
+                    {/* Specs List with interactive parameter tooltips */}
+                    <div className="space-y-1.5 pt-2 border-t border-slate-800/80 text-xs">
+                      <div className="flex justify-between items-center text-slate-400">
+                        <ParameterTooltip param="resolution" align={align}>
+                          <span>Resolution:</span>
+                        </ParameterTooltip>
+                        <strong className="text-slate-200 font-mono">{cfg.resolution}</strong>
+                      </div>
+                      <div className="flex justify-between items-center text-slate-400">
+                        <ParameterTooltip param="baseFrames" align={align}>
+                          <span>Base frames:</span>
+                        </ParameterTooltip>
+                        <strong className="text-slate-200 font-mono">{cfg.baseFrames}f</strong>
+                      </div>
+                      <div className="flex justify-between items-center text-slate-400">
+                        <ParameterTooltip param="tokens" align={align}>
+                          <span>Tokens/chunk:</span>
+                        </ParameterTooltip>
+                        <strong className="text-cyan-300 font-mono">{cfg.tokens.toLocaleString()}</strong>
+                      </div>
+                      <div className="flex justify-between items-center text-slate-400">
+                        <ParameterTooltip param="vram" align={align}>
+                          <span>Target VRAM:</span>
+                        </ParameterTooltip>
+                        <strong className="text-emerald-300 font-mono">{meta.vram}</strong>
+                      </div>
+                      <div className="flex justify-between items-center text-slate-400">
+                        <ParameterTooltip param="hardware" align={align}>
+                          <span>Hardware:</span>
+                        </ParameterTooltip>
+                        <strong
+                          className="text-indigo-300 font-mono text-[11px] truncate max-w-[130px]"
+                          title={filterMeta.hardwareLabel}
+                        >
+                          {filterMeta.hardwareLabel.split('(')[0].trim()}
+                        </strong>
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                    <h3 className="text-lg font-bold text-white">
-                      {cfg.name}
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {cfg.tagline}
+                  {/* Bottom footer description */}
+                  <div className="mt-4 pt-3 border-t border-slate-800/60 w-full space-y-1">
+                    <p className="text-[11px] font-semibold text-slate-300 truncate" title={filterMeta.hardwareLabel}>
+                      {filterMeta.hardwareLabel}
+                    </p>
+                    <p className="text-xs text-slate-400 line-clamp-2">
+                      {meta.recommendedFor}
                     </p>
                   </div>
-
-                  {/* Specs List as friendly stacked badges */}
-                  <div className="space-y-1.5 pt-2 border-t border-slate-800/80 text-xs">
-                    <div className="flex justify-between text-slate-400">
-                      <span>Resolution:</span>
-                      <strong className="text-slate-200 font-mono">{cfg.resolution}</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Base frames:</span>
-                      <strong className="text-slate-200 font-mono">{cfg.baseFrames}f</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Tokens/chunk:</span>
-                      <strong className="text-cyan-300 font-mono">{cfg.tokens.toLocaleString()}</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Target VRAM:</span>
-                      <strong className="text-emerald-300 font-mono">{meta.vram}</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Hardware:</span>
-                      <strong
-                        className="text-indigo-300 font-mono text-[11px] truncate max-w-[130px]"
-                        title={filterMeta.hardwareLabel}
-                      >
-                        {filterMeta.hardwareLabel.split('(')[0].trim()}
-                      </strong>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom footer description */}
-                <div className="mt-4 pt-3 border-t border-slate-800/60 w-full space-y-1">
-                  <p className="text-[11px] font-semibold text-slate-300 truncate" title={filterMeta.hardwareLabel}>
-                    {filterMeta.hardwareLabel}
-                  </p>
-                  <p className="text-xs text-slate-400 line-clamp-2">
-                    {meta.recommendedFor}
-                  </p>
-                </div>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -380,26 +406,42 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
             <div className="px-5 pb-5 pt-2 border-t border-slate-800/60 text-sm text-slate-300 space-y-4">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <span className="text-slate-400 block mb-1">Total Parameters</span>
-                  <strong className="text-base font-bold text-white font-mono">
+                  <div className="mb-1">
+                    <ParameterTooltip param="totalParams" align="left">
+                      <span className="text-slate-400">Total Parameters</span>
+                    </ParameterTooltip>
+                  </div>
+                  <strong className="text-base font-bold text-white font-mono block">
                     {(ditParams.totalParams / 1_000_000).toFixed(1)}M
                   </strong>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <span className="text-slate-400 block mb-1">Layers &amp; Heads</span>
-                  <strong className="text-base font-bold text-cyan-300 font-mono">
+                  <div className="mb-1">
+                    <ParameterTooltip param="layersHeads" align="left">
+                      <span className="text-slate-400">Layers &amp; Heads</span>
+                    </ParameterTooltip>
+                  </div>
+                  <strong className="text-base font-bold text-cyan-300 font-mono block">
                     {activeDitCfg.numLayers}L / {activeDitCfg.numHeads}H
                   </strong>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <span className="text-slate-400 block mb-1">Hidden Dim</span>
-                  <strong className="text-base font-bold text-slate-200 font-mono">
+                  <div className="mb-1">
+                    <ParameterTooltip param="hiddenDim" align="center">
+                      <span className="text-slate-400">Hidden Dim</span>
+                    </ParameterTooltip>
+                  </div>
+                  <strong className="text-base font-bold text-slate-200 font-mono block">
                     {activeDitCfg.hiddenDim}D
                   </strong>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
-                  <span className="text-slate-400 block mb-1">Modulation Savings</span>
-                  <strong className="text-base font-bold text-emerald-300 font-mono">
+                  <div className="mb-1">
+                    <ParameterTooltip param="modulation" align="right">
+                      <span className="text-slate-400">Modulation Savings</span>
+                    </ParameterTooltip>
+                  </div>
+                  <strong className="text-base font-bold text-emerald-300 font-mono block">
                     &gt;80% (Shared MLP)
                   </strong>
                 </div>
