@@ -21,6 +21,7 @@ import torch
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
 from vidgen.config import get_preset, resolve_device
 from vidgen.data.buckets import BucketSampler
+from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.logging import StructuredLogger
 from vidgen.seed import seed_everything
@@ -31,7 +32,7 @@ class VAETrainer:
     def __init__(self, preset: str = "tiny", seed: int = 0, lr: float = 1e-4,
                  kl_weight: float = 1e-4, batch_size: int = 2, num_clips: int = 64,
                  device: str = "cpu", ckpt_dir: str | None = None,
-                 log_path: str | None = None):
+                 log_path: str | None = None, data_dir: str | None = None):
         seed_everything(seed)
         self.seed = seed
         self.cfg = get_preset(preset)
@@ -44,10 +45,17 @@ class VAETrainer:
 
         self.vae = CausalVAE().to(self.device)
         self.opt = torch.optim.AdamW(self.vae.parameters(), lr=lr)
-        self.dataset = MovingMNISTDataset(
-            num_clips, height=self.cfg.height, width=self.cfg.width,
-            frames=self.cfg.frames, base_seed=seed + 1)
-        self.sampler = BucketSampler(num_clips, batch_size, seed=seed + 2)
+        if data_dir:
+            self.dataset = FolderClipDataset(
+                data_dir, height=self.cfg.height, width=self.cfg.width,
+                frames=self.cfg.frames)
+            num_items = len(self.dataset)
+        else:
+            self.dataset = MovingMNISTDataset(
+                num_clips, height=self.cfg.height, width=self.cfg.width,
+                frames=self.cfg.frames, base_seed=seed + 1)
+            num_items = num_clips
+        self.sampler = BucketSampler(num_items, batch_size, seed=seed + 2)
         self.step = 0
         self.logger = StructuredLogger(log_path) if log_path else None
         self.loss_history: list[float] = []
@@ -123,19 +131,24 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=6)
     ap.add_argument("--log", default=None)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--data-dir", default=None,
+                    help="prepared real-clip dataset dir (manifest.jsonl + .npy clips); "
+                         "when set, it replaces Moving MNIST")
     args = ap.parse_args()
 
     if args.resume:
         tr = VAETrainer.resume(
             args.resume, seed=args.seed, lr=args.lr, kl_weight=args.kl_weight,
             batch_size=args.batch_size, num_clips=args.num_clips,
-            device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log)
+            device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
+            data_dir=args.data_dir)
         print(f"resumed from {args.resume} at step {tr.step}")
     else:
         tr = VAETrainer(preset=args.preset, seed=args.seed, lr=args.lr,
                         kl_weight=args.kl_weight, batch_size=args.batch_size,
                         num_clips=args.num_clips, device=args.device,
-                        ckpt_dir=args.ckpt_dir, log_path=args.log)
+                        ckpt_dir=args.ckpt_dir, log_path=args.log,
+                        data_dir=args.data_dir)
     n_params = sum(p.numel() for p in tr.vae.parameters()) / 1e6
     print(f"preset={args.preset} vae_params={n_params:.2f}M device={tr.device}")
 

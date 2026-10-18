@@ -25,11 +25,14 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/flow.py` | Part 7 | Rectified flow `x_t = (1-t)x_0 + t x_1`, velocity target `x_1 - x_0`; shifted logit-normal timesteps (s=5.0); 10-bin diagnostic losses |
 | `vidgen/sampler.py` | Part 8 | Euler / Midpoint / RK4 ODE samplers with classifier-free guidance; oracle recovery < 1e-5 |
 | `vidgen/checkpoint.py` | Part 7 | Save/load with python+numpy+torch RNG states → resume reproduces next-step loss bit-for-bit |
-| `vidgen/train.py` | Part 7 | `DiTTrainer` + CLI: rectified-flow DiT training in VAE latent space on Moving MNIST; AdamW, grad-clip 1.0, 10% caption dropout, `--vae-ckpt` for a trained VAE |
-| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing |
+| `vidgen/train.py` | Part 7 | `DiTTrainer` + CLI: rectified-flow DiT training in VAE latent space on Moving MNIST; AdamW, grad-clip 1.0, 10% caption dropout, `--vae-ckpt` for a trained VAE; `--data-dir` trains on a prepared real-clip directory instead |
+| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips |
+| `vidgen/data/clips.py` | Part 1 | `FolderClipDataset`: reads a prepared directory (`manifest.jsonl` + uint8 `(T,H,W,3)` `.npy` clips); yields the exact Moving MNIST sample format; deterministic manifest-order indexing; `max_clips` cap |
 | `vidgen/sample.py` | Part 8 | Sample a clip from a DiT checkpoint → VAE decode → `.npy` (+ PNG/GIF if Pillow installed) |
-| `requirements.txt` | — | `torch`, `numpy`, `pytest` (CPU index for torch; Pillow optional) |
-| `tests/` | — | 39 tests mirroring the README's CPU suite (see below) |
+| `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pexels API via `PEXELS_API_KEY` env var, or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
+| `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
+| `requirements.txt` | — | `torch`, `numpy`, `pytest` (CPU index for torch; Pillow optional) — no new deps (prep script is stdlib + torch/numpy; decoders preinstalled on Colab) |
+| `tests/` | — | 49 tests mirroring the README's CPU suite (see below), incl. real-clip dataset + prep helpers |
 
 ## Notable design decisions / spec deviations
 
@@ -118,6 +121,62 @@ plateaus early, raise `--num-clips` (more digit/speed variety) before touching
 the model. For longer runs, Kaggle gives ~30 h/week of GPU; split into
 sessions with `--resume`.
 
+## Real-data training path (real stock clips, "City and people" theme)
+
+Moving MNIST is synthetic; real clips teach the model real scenes. The real-data
+path is three steps: **prepare → verify → train**. It is a *fresh* run —
+the VAE retrains from scratch on the real clips.
+
+**Dataset format.** A prepared directory holds `manifest.jsonl` (one JSON
+object per line: `{"file": "clip_000001.npy", "caption": "..."}`) plus one
+uint8 `.npy` file per clip of shape `(T, H, W, 3)` (e.g. `(17, 64, 64, 3)`).
+`vidgen/data/clips.py::FolderClipDataset` reads such a directory and yields
+samples in exactly the Moving MNIST format — `(float32 [3, T, H, W] in [-1, 1]
+tensor, str caption)` — so both trainers consume either dataset.
+
+**Prepare (Colab).** Open
+[`notebooks/prepare_clips_drive.ipynb`](notebooks/prepare_clips_drive.ipynb):
+it mounts Drive, clones the repo, and runs `scripts/prepare_clips.py`, which
+downloads stock videos (Pexels API — key via the notebook's `getpass` prompt,
+never hardcoded — or `--source urls` with a list of direct video URLs, no key),
+then per video: download to a temp dir (cleaned after each video) → decode
+(cv2, else imageio) → center 17-frame window at even stride → center-crop to
+square → resize to 64×64 → skip too-short / corrupt / too-dark / near-static
+clips (reusing `vidgen/data/filters.py` quality gates) → dedupe by content
+hash → write `<id>.npy` + manifest line with a caption (Pexels: the search
+query; URL lists: a caption derived from the file name). It prints
+downloaded/kept/skipped counts and total MB at the end. The notebook's
+defaults collect the **"City and people"** theme: six queries × 500 videos
+(≈3,000 clips, ~600 MB) into `MyDrive/vidgin-data/tiny-clips/`.
+
+**Train on the clips** (after the Moving MNIST run finishes; checkpoints go
+to separate Drive folders):
+
+```bash
+# 1. VAE from scratch on real clips (~1-2 h on T4)
+python -m vidgen.train_vae --device cuda --steps 4000 --batch-size 16 \
+    --data-dir /content/drive/MyDrive/vidgin-data/tiny-clips \
+    --ckpt-dir /content/drive/MyDrive/vidgin-checkpoints/real-vae --ckpt-every 500 \
+    --log /content/drive/MyDrive/vidgin-checkpoints/real-vae/train.jsonl
+
+# 2. DiT on the real-trained VAE's latents (~4-8 h on T4)
+python -m vidgen.train --device cuda --steps 15000 --batch-size 16 \
+    --data-dir /content/drive/MyDrive/vidgin-data/tiny-clips \
+    --vae-ckpt /content/drive/MyDrive/vidgin-checkpoints/real-vae/latest.pt \
+    --ckpt-dir /content/drive/MyDrive/vidgin-checkpoints/real-dit --ckpt-every 500 \
+    --log /content/drive/MyDrive/vidgin-checkpoints/real-dit/train.jsonl
+```
+
+Both trainers accept `--data-dir` (also as a `data_dir=` constructor arg);
+when set it replaces Moving MNIST and the sampler sizes itself to the
+manifest. Omit it and behavior is byte-identical to the synthetic path.
+
+**Dataset storage, in one line:** clips must live on the training machine's
+disk *while training* (the trainer re-reads them every epoch); once training
+is done the model file carries everything it learned and the clips are only
+needed again if you train more — so keep the dataset on cheap storage
+(Drive / an external disk) as a reusable asset, not as a forever requirement.
+
 ## What remains GPU/cluster-only (from GPU_CHECKLIST.md)
 
 These are documentation-only — they need hardware nobody here has:
@@ -138,7 +197,7 @@ These are documentation-only — they need hardware nobody here has:
 
 ## Verification evidence (2026-10-18, this VM: 2 CPU cores, no GPU)
 
-- `pytest tests/ -q`: **39 passed, 2 skipped** (GPU-only tests), 0 failed.
+- `pytest tests/ -q`: **49 passed, 2 skipped** (GPU-only tests), 0 failed (39 original + 10 new: real-clip dataset format/parity/errors, trainer `data_dir` smoke steps, and `prepare_clips.py` pure helpers).
 - Overfit sanity (`tests/test_trainability.py`): DiT flow loss on a fixed
   batch fell to < 60% of its initial value in 20 steps; VAE reconstruction
   loss decreased monotonically over 35 steps.
