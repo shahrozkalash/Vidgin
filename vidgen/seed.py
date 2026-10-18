@@ -48,18 +48,22 @@ def get_rng_states() -> dict:
 
 
 def set_rng_states(state: dict) -> None:
-    """Restore RNG states saved by get_rng_states()."""
+    """Restore RNG states saved by get_rng_states().
+
+    States are stored on CPU, but a checkpoint loaded with
+    map_location='cuda' (or loaded on a GPU machine) may carry them on CUDA:
+    torch.set_rng_state() only accepts a CPU tensor, so force CPU at restore.
+    torch.cuda.set_rng_state_all() accepts CPU ByteTensors and routes them to
+    the right device internally.
+    """
     import numpy as np
     import torch
 
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
+    torch.set_rng_state(state["torch"].cpu())
     cuda_states = state.get("torch_cuda")
     if cuda_states is not None and torch.cuda.is_available():
-        # get_rng_state_all() returns one state per device id, in order;
-        # states were stored on CPU for portability, so move each back to
-        # its own device before restoring.
-        torch.cuda.set_rng_state_all(
-            [s.to(f"cuda:{i}") for i, s in enumerate(cuda_states)]
-        )
+        if not isinstance(cuda_states, (list, tuple)):
+            cuda_states = [cuda_states]
+        torch.cuda.set_rng_state_all([s.cpu() for s in cuda_states])

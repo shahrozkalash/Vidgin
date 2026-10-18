@@ -21,7 +21,12 @@ VOCAB = [
 
 
 class TinyTextEncoder(nn.Module):
-    """Learned word embeddings -> [B, L, Dt] + boolean padding mask."""
+    """Learned word embeddings -> [B, L, Dt] + boolean padding mask.
+
+    Device contract: every tensor returned by forward() and null_embedding()
+    lives on the embedding weight's device, so GPU training never hits
+    "Expected all tensors to be on the same device".
+    """
 
     def __init__(self, vocab: list[str] | None = None, d_t: int = 256, max_len: int = 32):
         super().__init__()
@@ -39,15 +44,21 @@ class TinyTextEncoder(nn.Module):
         return ids
 
     def forward(self, captions: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Embed captions -> ([B, L, Dt] embeds, [B, L] bool padding mask).
+
+        Both tensors are allocated on the embedding weight's device: the
+        mask must not stay on CPU when the module runs on CUDA.
+        """
+        device = self.embedding.weight.device
         b = len(captions)
-        ids = torch.zeros(b, self.max_len, dtype=torch.long)
-        mask = torch.zeros(b, self.max_len, dtype=torch.bool)
+        ids = torch.zeros(b, self.max_len, dtype=torch.long, device=device)
+        mask = torch.zeros(b, self.max_len, dtype=torch.bool, device=device)
         for i, cap in enumerate(captions):
             toks = self.tokenize(cap)
             if toks:
-                ids[i, : len(toks)] = torch.tensor(toks)
+                ids[i, : len(toks)] = torch.tensor(toks, device=device)
                 mask[i, : len(toks)] = True
-        return self.embedding(ids.to(self.embedding.weight.device)), mask
+        return self.embedding(ids), mask
 
     def null_embedding(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Cached null (empty prompt) embedding for CFG: [1, 1, Dt], mask False."""
@@ -62,6 +73,8 @@ class FrozenEncoderStub:
     Interface contract the real encoder must satisfy:
         encode(captions: list[str]) -> (embeds [B, L, Dt=4096], mask [B, L])
     with requires_grad=False on all parameters and a cached null embedding.
+    As with TinyTextEncoder, every returned tensor must live on the module's
+    device (never a CPU mask with CUDA embeddings).
     Instantiating this stub raises an informative error; it exists so the
     DiT cross-attention interface stays honest about the swap path.
     """
