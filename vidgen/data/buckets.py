@@ -244,5 +244,17 @@ class DistributedBucketSampler(Sampler[List[int]]):
         return len(batches)
 
 
+def worker_init_fn(worker_id: int, base_seed: int = 42) -> None:
+    """Set deterministic per-worker seed for PyTorch DataLoader workers.
+
+    Ensures each worker has a unique, reproducible pseudorandom sequence.
+    """
+    worker_seed = (base_seed + worker_id) % (2**32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
+
 # Alias for backward compatibility
 AspectRatioBucketSampler = DistributedBucketSampler
+

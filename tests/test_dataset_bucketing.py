@@ -289,3 +289,34 @@ def test_throughput_and_visual_dump_acceptance(tmp_path):
     throughput = total_samples / max(1e-4, elapsed)
 
     assert throughput > 40.0, f"Throughput ({throughput:.1f} clips/s) below training step requirement"
+
+
+def test_worker_init_fn_and_webdataset_tar(tmp_path):
+    """Verify worker_init_fn deterministic seeding and WebDataset tar creation."""
+    from vidgen.data.buckets import worker_init_fn
+    from vidgen.data.precompute import export_to_webdataset_tar
+
+    # Test worker seeding
+    worker_init_fn(worker_id=3, base_seed=123)
+    rand1 = np.random.rand()
+    worker_init_fn(worker_id=3, base_seed=123)
+    rand2 = np.random.rand()
+    assert rand1 == rand2, "worker_init_fn should be reproducible with same worker_id and base_seed"
+
+    # Test WebDataset tar export
+    manifest_data = [
+        {"id": "clip_001", "shard_path": str(tmp_path / "clip_001.safetensors"), "bucket": [17, 64, 64]},
+        {"id": "clip_002", "shard_path": str(tmp_path / "clip_002.safetensors"), "bucket": [1, 64, 64]},
+    ]
+    # Create dummy shard files
+    for m in manifest_data:
+        Path(m["shard_path"]).write_bytes(b"dummy_safetensors_bytes")
+
+    manifest_file = tmp_path / "precomputed_manifest.json"
+    with open(manifest_file, "w") as f:
+        json.dump(manifest_data, f)
+
+    tar_out = tmp_path / "shards.tar"
+    export_to_webdataset_tar(manifest_file, tar_out)
+    assert tar_out.exists() and tar_out.stat().st_size > 0
+

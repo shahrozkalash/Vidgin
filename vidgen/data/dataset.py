@@ -27,6 +27,68 @@ from vidgen.data.manifest import read_manifest
 from vidgen.data.buckets import BucketSpec, get_standard_buckets, find_nearest_bucket
 
 
+def decode_video(
+    video_path: str | Path,
+    target_fps: float = 16.0,
+    max_frames: Optional[int] = None,
+    backend: str = "auto",
+) -> Tuple[np.ndarray, float]:
+    """Decode video using decord, torchcodec, or PyAV with temporal resampling.
+
+    Args:
+        video_path: Path to video file
+        target_fps: Desired framerate (Wan uses 16.0)
+        max_frames: Maximum frames to decode
+        backend: 'auto', 'decord', 'torchcodec', or 'pyav'
+
+    Returns:
+        frames: [T, H, W, 3] in uint8
+        original_fps: float
+    """
+    video_path = str(video_path)
+
+    # 1. Try decord if specified or auto
+    if backend in ("auto", "decord"):
+        try:
+            import decord
+            decord.bridge.set_bridge("native")
+            vr = decord.VideoReader(video_path)
+            original_fps = float(vr.get_avg_fps() or 30.0)
+            total_raw = len(vr)
+            if max_frames is not None:
+                total_raw = min(total_raw, max_frames)
+            duration = total_raw / max(1.0, original_fps)
+            target_num_frames = max(1, round(duration * target_fps))
+            indices = np.linspace(0, total_raw - 1, target_num_frames, dtype=int)
+            raw_frames = vr.get_batch(indices).asnumpy()  # [T, H, W, 3]
+            return raw_frames, original_fps
+        except Exception:
+            if backend == "decord":
+                raise
+
+    # 2. Try torchcodec if specified or auto
+    if backend in ("auto", "torchcodec"):
+        try:
+            from torchcodec.decoders import VideoDecoder
+            decoder = VideoDecoder(video_path)
+            original_fps = float(decoder.metadata.average_fps or 30.0)
+            total_raw = decoder.metadata.num_frames or len(decoder)
+            if max_frames is not None:
+                total_raw = min(total_raw, max_frames)
+            duration = total_raw / max(1.0, original_fps)
+            target_num_frames = max(1, round(duration * target_fps))
+            indices = np.linspace(0, total_raw - 1, target_num_frames, dtype=int)
+            frames_tensor = decoder.get_frames_at_indices(indices.tolist()).data  # [T, C, H, W]
+            raw_frames = frames_tensor.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
+            return raw_frames, original_fps
+        except Exception:
+            if backend == "torchcodec":
+                raise
+
+    # 3. PyAV (standard robust fallback)
+    return decode_video_pyav(video_path, target_fps=target_fps, max_frames=max_frames)
+
+
 def decode_video_pyav(
     video_path: str | Path,
     target_fps: float = 16.0,
@@ -68,6 +130,7 @@ def decode_video_pyav(
 
     resampled_frames = np.stack([raw_frames[i] for i in resampled_indices], axis=0)
     return resampled_frames, original_fps
+
 
 
 def decode_media_fallback(
@@ -151,6 +214,18 @@ class AdvancedVideoDataset(Dataset):
         if len(self.df) == 0:
             raise ValueError(f"No passed clips found in manifest {manifest_path}")
 
+        # Control image/video mix ratio if both types are present
+        if self.image_ratio is not None and 0.0 <= self.image_ratio <= 1.0:
+            df_img = self.df[self.df["media_type"] == "image"]
+            df_vid = self.df[self.df["media_type"] == "video"]
+            if len(df_img) > 0 and len(df_vid) > 0:
+                total_target = len(self.df)
+                target_img_count = max(1, int(round(total_target * self.image_ratio)))
+                target_vid_count = max(1, total_target - target_img_count)
+                sampled_img = df_img.sample(n=target_img_count, replace=(len(df_img) < target_img_count), random_state=self.seed)
+                sampled_vid = df_vid.sample(n=target_vid_count, replace=(len(df_vid) < target_vid_count), random_state=self.seed)
+                self.df = pd.concat([sampled_vid, sampled_img]).sample(frac=1.0, random_state=self.seed).reset_index(drop=True)
+
         # Standard aspect ratio buckets
         self.buckets = get_standard_buckets(preset=preset)
 
@@ -163,6 +238,7 @@ class AdvancedVideoDataset(Dataset):
             w = int(row["width"]) if pd.notna(row["width"]) else 64
             bucket = find_nearest_bucket(frames, h, w, self.buckets, is_image=is_img)
             self.bucket_assignments.append(bucket)
+
 
     def __len__(self) -> int:
         return len(self.df)

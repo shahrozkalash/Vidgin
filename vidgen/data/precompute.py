@@ -104,13 +104,18 @@ def run_precompute_pipeline(
             gen = torch.Generator().manual_seed(idx * 100)
             lat_orig = torch.randn(16, t, h, w, generator=gen)
 
-        # 2. Horizontal flip augmentation
+        # 2. Augmentation variants: Horizontal flip and alternative crop
         pixels_hflip = torch.flip(pixels, dims=[-1])
+        # Alternative spatial crop (slight shift if spatial dims allow, or rolling shift)
+        pixels_crop2 = torch.roll(pixels, shifts=min(2, pixels.shape[-1] // 8), dims=-1)
+
         if vae is not None and hasattr(vae, "sample_latent"):
             with torch.no_grad():
                 lat_hflip = vae.sample_latent(pixels_hflip).squeeze(0)
+                lat_crop2 = vae.sample_latent(pixels_crop2).squeeze(0)
         else:
             lat_hflip = torch.flip(lat_orig, dims=[-1])
+            lat_crop2 = torch.roll(lat_orig, shifts=1, dims=-1)
 
         # Accumulate stats on original latents
         accumulator.update(lat_orig)
@@ -129,6 +134,7 @@ def run_precompute_pipeline(
         tensors_to_save = {
             "latents_orig": lat_orig.to(dtype_latent).cpu(),
             "latents_hflip": lat_hflip.to(dtype_latent).cpu(),
+            "latents_crop2": lat_crop2.to(dtype_latent).cpu(),
             "text_emb": text_emb,
             "text_null_emb": null_emb,
         }
@@ -198,9 +204,15 @@ class PrecomputedLatentDataset(Dataset):
         rec = self.records[idx]
         tensors = load_file(rec["shard_path"])
 
-        # Randomly choose between original and horizontally flipped variant
-        if self.use_augmentation and random.random() < 0.5:
-            latents = tensors["latents_hflip"]
+        # Randomly choose between original, horizontally flipped, and crop variant
+        if self.use_augmentation:
+            choice = random.random()
+            if choice < 0.33 and "latents_hflip" in tensors:
+                latents = tensors["latents_hflip"]
+            elif choice < 0.66 and "latents_crop2" in tensors:
+                latents = tensors["latents_crop2"]
+            else:
+                latents = tensors["latents_orig"]
         else:
             latents = tensors["latents_orig"]
 
@@ -223,3 +235,34 @@ class PrecomputedLatentDataset(Dataset):
             "is_dropped": is_dropped,
             "bucket": rec["bucket"],
         }
+
+
+def export_to_webdataset_tar(
+    precomputed_manifest_path: str | Path,
+    output_tar_path: str | Path,
+) -> Path:
+    """Pack precomputed shards into a WebDataset compatible tar archive."""
+    import tarfile
+    import io
+
+    manifest_path = Path(precomputed_manifest_path)
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
+    output_tar_path = Path(output_tar_path)
+    output_tar_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tarfile.open(output_tar_path, "w") as tar:
+        for rec in records:
+            clip_id = rec["id"]
+            shard_path = Path(rec["shard_path"])
+            if shard_path.exists():
+                tar.add(shard_path, arcname=f"{clip_id}.safetensors")
+            # Store metadata json alongside
+            meta_bytes = json.dumps(rec).encode("utf-8")
+            ti = tarfile.TarInfo(name=f"{clip_id}.json")
+            ti.size = len(meta_bytes)
+            tar.addfile(ti, io.BytesIO(meta_bytes))
+
+    return output_tar_path
+
