@@ -38,7 +38,8 @@ class DiTTrainer:
                  weight_decay: float = 0.01, batch_size: int = 2, num_clips: int = 64,
                  device: str = "cpu", ckpt_dir: str | None = None,
                  log_path: str | None = None, cfg_dropout: float = 0.1,
-                 vae_ckpt: str | None = None, data_dir: str | None = None):
+                 vae_ckpt: str | None = None, data_dir: str | None = None,
+                 grad_checkpoint: bool = False):
         seed_everything(seed)
         self.seed = seed
         self.cfg = get_preset(preset)
@@ -60,6 +61,8 @@ class DiTTrainer:
         self.text_enc = TinyTextEncoder(d_t=self.cfg.text_dim,
                                         max_len=self.cfg.text_max_len).to(self.device)
         self.dit = DiT(self.cfg).to(self.device)
+        if grad_checkpoint:
+            self.dit.set_grad_checkpoint(True)
         params = list(self.dit.parameters()) + list(self.text_enc.parameters())
         self.opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
@@ -193,6 +196,9 @@ def main() -> None:
     ap.add_argument("--data-dir", default=None,
                     help="prepared real-clip dataset dir (manifest.jsonl + .npy clips); "
                          "when set, it replaces Moving MNIST")
+    ap.add_argument("--grad-checkpoint", action="store_true",
+                    help="activation checkpointing for the DiT (needed to "
+                         "train Small and larger presets in limited memory)")
     args = ap.parse_args()
 
     if args.resume:
@@ -201,12 +207,15 @@ def main() -> None:
             num_clips=args.num_clips, device=args.device,
             ckpt_dir=args.ckpt_dir, log_path=args.log, vae_ckpt=args.vae_ckpt,
             data_dir=args.data_dir)
+        if args.grad_checkpoint:
+            tr.dit.set_grad_checkpoint(True)
         print(f"resumed from {args.resume} at step {tr.step}")
     else:
         tr = DiTTrainer(preset=args.preset, seed=args.seed, lr=args.lr,
                         batch_size=args.batch_size, num_clips=args.num_clips,
                         device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
-                        vae_ckpt=args.vae_ckpt, data_dir=args.data_dir)
+                        vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
+                        grad_checkpoint=args.grad_checkpoint)
     n_params = sum(p.numel() for p in tr.dit.parameters()) / 1e6
     print(f"preset={args.preset} dit_params={n_params:.1f}M "
           f"tokens={tr.cfg.num_tokens} device={tr.device}")

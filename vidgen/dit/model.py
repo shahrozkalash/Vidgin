@@ -212,6 +212,14 @@ class DiT(nn.Module):
         nn.init.zeros_(self.adaLN_final.bias)
         self.head = nn.Linear(d.dim, cfg.latent_channels * patch_vol)
         self._pos_cache = {}
+        self.grad_checkpoint = False
+
+    def set_grad_checkpoint(self, enabled: bool = True) -> None:
+        """Activation checkpointing: recompute block activations in the
+        backward pass instead of storing them. Trades ~30% speed for a
+        large activation-memory cut — required to train the Small preset
+        (and above) in limited RAM/VRAM. No effect at inference."""
+        self.grad_checkpoint = bool(enabled)
 
     def _positions(self, device):
         key = str(device)
@@ -228,7 +236,11 @@ class DiT(nn.Module):
         text, text_mask = self.text_proj(text, text_mask)
         pos = self._positions(latent.device)
         for blk in self.blocks:
-            x = blk(x, mod9, text, text_mask, pos)
+            if self.grad_checkpoint and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    blk, x, mod9, text, text_mask, pos, use_reentrant=False)
+            else:
+                x = blk(x, mod9, text, text_mask, pos)
         shift, scale = self.adaLN_final(c).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.head(x)

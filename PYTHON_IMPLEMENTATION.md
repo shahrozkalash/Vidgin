@@ -30,7 +30,8 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/data/clips.py` | Part 1 | `FolderClipDataset`: reads a prepared directory (`manifest.jsonl` + uint8 `(T,H,W,3)` `.npy` clips); yields the exact Moving MNIST sample format; deterministic manifest-order indexing; `max_clips` cap |
 | `vidgen/sample.py` | Part 8 | Sample a clip from a DiT checkpoint → VAE decode → `.npy` (+ PNG/GIF if Pillow installed) |
 | `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pixabay API via `PIXABAY_API_KEY` env var — recommended, free key issued instantly; Pexels API via `PEXELS_API_KEY` — only if you already have a key, since Pexels has paused issuing new ones; or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
-| `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
+| `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector (Pixabay/Pexels) → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
+| `scripts/harvest_urls.py` | Part 1 | No-API-key URL harvester (stdlib only): fetches stock search pages with a browser User-Agent and extracts direct `.mp4` file URLs from the embedded HTML (Pexels: `videos.pexels.com/video-files/<id>/<id>-<variant>.mp4`, pagination via `?page=N`, one sd variant per video; Pixabay: optional secondary source, `_tiny`→`_medium` suffix swap kept only when HEAD returns 200). Pure-function parsing (`extract_pexels_urls`, `choose_variant`) unit-tested without network. Writes `urls.txt` for `prepare_clips.py --source urls` |
 | `requirements.txt` | — | `torch`, `numpy`, `pytest` (CPU index for torch; Pillow optional) — no new deps (prep script is stdlib + torch/numpy; decoders preinstalled on Colab) |
 | `tests/` | — | 49 tests mirroring the README's CPU suite (see below), incl. real-clip dataset + prep helpers |
 
@@ -196,6 +197,53 @@ These are documentation-only — they need hardware nobody here has:
 - **30 s Moving MNIST rollout + VRAM profiling** — needs a real NVIDIA GPU
   (the chunked-decode and O(1)-memory machinery is not implemented in
   `vidgen/sample.py`, which decodes whole clips).
+
+## Stage 1 upgrade: long video by segment chaining (2026-10-19)
+
+`vidgen/extend.py` generates videos longer than the model's native window
+(Tiny: 17 frames) without retraining. Segment 1 is sampled normally; each
+following segment is sampled with its first `ctx_latent` latent frames clamped
+to the rectified-flow path toward the VAE encoding (posterior mean) of the
+accumulated video's tail — flow-matching inpainting in latent space — then
+stitched with a short crossfade over the reconstructed context to hide the
+VAE seam. Rationale: the DiT has no cross-segment attention and was trained on
+fixed windows, so latent prefix clamping is the closest principled
+conditioning the architecture supports; purely pixel-level chaining would
+restart motion at every join. Segment k uses seed + k, so a fixed base seed
+reproduces the whole video.
+
+CLI (`vidgen/sample.py`): `--seconds 30` (segments computed from the project
+playback rate of ~290 ms/frame, so ~103 frames ≈ 30 s), or explicit
+`--segments N`; `--ctx-latent` controls context length. Chained GIFs default
+to 290 ms/frame.
+
+Tests: `tests/test_extend.py` (7 tests) — segment arithmetic, output frame
+counts/shapes, finite in-range values, seed reproducibility. Full suite after
+this change: **72 passed, 2 skipped** (was 64 passed, 2 skipped; +1 test for
+gradient checkpointing, below). Still unproven until a GPU run: visual seam
+quality and motion coherence over many segments (drift is expected to grow
+with segment count at Tiny scale).
+
+Small preset (256×256, 33 frames) readiness, verified on this VM
+(2 CPU cores, ~8 GB RAM) on 2026-10-19:
+
+- VAE: one full training step via `train_vae.py --preset small`
+  (3.65M params), checkpoint saved, loss 0.9982.
+- DiT: 285.9M params, 2,304 tokens. Inference forward at full latent shape
+  (1, 16, 9, 32, 32) passes (finite, correct shape, ~1.6 GB RSS). A plain
+  training step OOM-kills on this VM during the training forward —
+  activation memory, not a code bug (attention already uses SDPA).
+- Fix: opt-in activation checkpointing — `DiT.set_grad_checkpoint()` and
+  `train.py --grad-checkpoint`. With it, the training forward+backward
+  peaks at ~3.3 GB RSS and a full CLI training step completes:
+  `train.py --preset small --steps 1 --grad-checkpoint` saved
+  step_000001.pt, loss 1.4266.
+- Sampling: `sample.py` from the 1-step checkpoints produced
+  frames (33, 256, 256, 3) + GIF end-to-end (content is near-mean noise, as
+  expected after a single step — pipeline proof, not quality proof).
+
+Small training settings for the GPU stage: batch 1–4 with
+`--grad-checkpoint` on a 16 GB card; real training is Stage 2 work.
 
 ## Verification evidence (2026-10-18, this VM: 2 CPU cores, no GPU)
 

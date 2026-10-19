@@ -58,6 +58,28 @@ def test_dit_forward_shape():
     assert v.shape == lat.shape, "DiT must output a velocity field of latent shape"
 
 
+def test_dit_grad_checkpoint_backward():
+    # Stage 1 upgrade: activation checkpointing must produce the same-shaped
+    # output and real gradients in training mode, and stay inert at eval.
+    cfg, dit = _tiny_dit()
+    dit.set_grad_checkpoint(True)
+    enc = TinyTextEncoder(d_t=cfg.text_dim, max_len=cfg.text_max_len)
+    lat = torch.randn(1, 16, 5, 8, 8)
+    t = torch.tensor([0.5])
+    text, mask = enc(["digit 3 moving left"])
+    dit.train()
+    v = dit(lat, t, text, mask)
+    assert v.shape == lat.shape
+    (v ** 2).mean().backward()
+    grads = [p.grad for p in dit.parameters() if p.grad is not None]
+    assert grads, "checkpointed backward produced no gradients"
+    assert all(torch.isfinite(g).all() for g in grads)
+    dit.eval()
+    with torch.no_grad():
+        v2 = dit(lat, t, text, mask)
+    assert v2.shape == lat.shape
+
+
 def test_tiny_param_count_within_10pct():
     cfg, dit = _tiny_dit()
     n = count_params(dit)

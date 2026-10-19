@@ -19,14 +19,20 @@ import torch
 from vidgen.checkpoint import load_checkpoint
 from vidgen.config import get_preset, resolve_device
 from vidgen.dit.model import DiT
+from vidgen.extend import generate_long, new_frames_per_segment, segments_for_seconds
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import TinyTextEncoder
 from vidgen.vae.model import CausalVAE
 
 
-def save_frames(frames: np.ndarray, outdir: str) -> dict:
-    """frames: [T, H, W, 3] float32 in [-1, 1]. Returns paths written."""
+def save_frames(frames: np.ndarray, outdir: str, duration_ms: int = 62) -> dict:
+    """frames: [T, H, W, 3] float32 in [-1, 1]. Returns paths written.
+
+    ``duration_ms`` sets the GIF frame duration; 62 keeps the original fast
+    preview, 290 matches the project's standard playback rate (~5 s for a
+    17-frame clip; the long-clip path uses 290).
+    """
     os.makedirs(outdir, exist_ok=True)
     out = {}
     npy_path = os.path.join(outdir, "frames.npy")
@@ -43,7 +49,8 @@ def save_frames(frames: np.ndarray, outdir: str) -> dict:
             png_paths.append(p)
         gif_path = os.path.join(outdir, "clip.gif")
         imgs = [Image.fromarray(f) for f in uint8]
-        imgs[0].save(gif_path, save_all=True, append_images=imgs[1:], duration=62)
+        imgs[0].save(gif_path, save_all=True, append_images=imgs[1:],
+                     duration=duration_ms)
         out["png_frames"] = png_paths
         out["gif"] = gif_path
     except ImportError:
@@ -62,6 +69,19 @@ def main() -> None:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--outdir", default="outputs/clip")
     ap.add_argument("--vae-ckpt", default=None)
+    # Stage 1 upgrade: long video via segment chaining (vidgen.extend).
+    ap.add_argument("--seconds", type=float, default=0.0,
+                    help="target duration; segments are chained to reach it "
+                         "(~290 ms/frame). 0 = single native window (old behavior)")
+    ap.add_argument("--segments", type=int, default=0,
+                    help="explicit segment count; overrides --seconds")
+    ap.add_argument("--ctx-latent", type=int, default=2,
+                    help="latent frames of past used as chaining context")
+    ap.add_argument("--blend", type=int, default=2,
+                    help="pixel frames crossfaded at each segment join")
+    ap.add_argument("--frame-ms", type=int, default=0,
+                    help="GIF frame duration ms; 0 = 62 for single clips, "
+                         "290 for chained clips")
     args = ap.parse_args()
 
     seed_everything(args.seed)
@@ -79,20 +99,37 @@ def main() -> None:
     dit.load_state_dict(payload["dit"])
     text_enc.load_state_dict(payload["text_enc"])
 
-    text, text_mask = text_enc([args.prompt])
-    null_text, null_mask = text_enc.null_embedding()
-    lat_shape = (1, cfg.latent_channels, cfg.latent_t, cfg.latent_h, cfg.latent_w)
-    z = sample_latents(dit, lat_shape, text.to(device), text_mask.to(device),
-                       null_text.to(device), null_mask.to(device),
-                       method=args.method, num_steps=args.steps,
-                       cfg_scale=args.cfg, seed=args.seed, device=device)
-    with torch.no_grad():
-        clip = vae.decode(z / cfg.latent_scale)  # [1,3,T,H,W] in [-1,1]
-    frames = clip[0].permute(1, 2, 3, 0).cpu().numpy()  # [T,H,W,3]
-    assert frames.shape == (cfg.frames, cfg.height, cfg.width, 3)
+    segments = args.segments
+    if segments <= 0 and args.seconds > 0:
+        segments = segments_for_seconds(cfg, args.seconds, args.ctx_latent)
+    chained = segments > 1
+    if chained:
+        frames = generate_long(dit, vae, text_enc, cfg, args.prompt,
+                               segments=segments, steps=args.steps,
+                               method=args.method, cfg_scale=args.cfg,
+                               seed=args.seed, device=device,
+                               ctx_latent=args.ctx_latent, blend=args.blend)
+        expect_t = cfg.frames + (segments - 1) * new_frames_per_segment(
+            cfg, args.ctx_latent)
+        assert frames.shape == (expect_t, cfg.height, cfg.width, 3), frames.shape
+    else:
+        text, text_mask = text_enc([args.prompt])
+        null_text, null_mask = text_enc.null_embedding()
+        lat_shape = (1, cfg.latent_channels, cfg.latent_t, cfg.latent_h, cfg.latent_w)
+        z = sample_latents(dit, lat_shape, text.to(device), text_mask.to(device),
+                           null_text.to(device), null_mask.to(device),
+                           method=args.method, num_steps=args.steps,
+                           cfg_scale=args.cfg, seed=args.seed, device=device)
+        with torch.no_grad():
+            clip = vae.decode(z / cfg.latent_scale)  # [1,3,T,H,W] in [-1,1]
+        frames = clip[0].permute(1, 2, 3, 0).cpu().numpy()  # [T,H,W,3]
+        assert frames.shape == (cfg.frames, cfg.height, cfg.width, 3)
     assert frames.min() >= -1.0 - 1e-5 and frames.max() <= 1.0 + 1e-5
-    out = save_frames(frames, args.outdir)
-    print(f"sampled clip: shape={frames.shape} range=[{frames.min():.3f},{frames.max():.3f}]")
+    frame_ms = args.frame_ms or (290 if chained else 62)
+    out = save_frames(frames, args.outdir, duration_ms=frame_ms)
+    dur = frames.shape[0] * frame_ms / 1000.0
+    print(f"sampled clip: shape={frames.shape} (~{dur:.1f}s at {frame_ms}ms/frame) "
+          f"range=[{frames.min():.3f},{frames.max():.3f}]")
     for k, v in out.items():
         print(f"  {k}: {v}")
 
