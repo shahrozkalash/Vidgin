@@ -126,18 +126,34 @@ def pexels_caption(video: dict, query: str) -> str:
 
 
 # ------------------------------------------------------------------ decode
-def decode_video(path: str) -> np.ndarray:
-    """Decode a video file to uint8 (N, H, W, 3). Tries cv2, then imageio."""
+def decode_video(path: str, want_frames: int | None = None) -> np.ndarray:
+    """Decode a video file to uint8 (N, H, W, 3). Tries cv2, then imageio.
+
+    Memory-bounded: when want_frames is given and the total frame count is
+    known, only the frames build_clip will actually sample are kept during
+    the single decode pass. The previous accumulate-everything version put
+    whole videos in RAM and was OOM-killed (exit 137) by long/high-res
+    sources at random positions in a URL list.
+    """
     try:
         import cv2  # type: ignore
 
         cap = cv2.VideoCapture(path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        keep_idx: set[int] | None = None
+        if want_frames and total > want_frames:
+            idx = select_frame_indices(total, want_frames)
+            if idx is not None:
+                keep_idx = {int(i) for i in idx}
         frames = []
+        n = 0
         while True:
             ok, bgr = cap.read()
             if not ok:
                 break
-            frames.append(bgr[:, :, ::-1])  # BGR -> RGB
+            if keep_idx is None or n in keep_idx:
+                frames.append(bgr[:, :, ::-1])  # BGR -> RGB
+            n += 1
         cap.release()
         if not frames:
             raise ValueError("no frames decoded")
@@ -407,6 +423,32 @@ def main() -> None:
     reasons: dict[str, int] = {}
     seen_hashes: set[str] = set()
     bytes_written = 0
+    kept_offset = 0
+    existing_count = 0
+
+    # Resume support: when --out already holds clips from an earlier run,
+    # continue numbering after the highest existing clip index instead of
+    # overwriting clip_000001.npy on every run, and treat the existing
+    # clips' content as already seen so re-running a list appends safely.
+    existing_indices: list[int] = []
+    for fname in os.listdir(args.out):
+        if fname.startswith("clip_") and fname.endswith(".npy"):
+            try:
+                existing_indices.append(int(fname[5:-4]))
+            except ValueError:
+                continue
+    if existing_indices:
+        kept_offset = max(existing_indices)
+        existing_count = len(existing_indices)
+        for idx in existing_indices:
+            arr = np.load(os.path.join(args.out, f"clip_{idx:06d}.npy"))
+            seen_hashes.add(content_hash(arr))
+        print(
+            f"resuming in {args.out}: {existing_count} clips already present "
+            f"(highest index {kept_offset}); new clips continue from "
+            f"clip_{kept_offset + 1:06d}.npy",
+            flush=True,
+        )
 
     with open(manifest_path, "a", encoding="utf-8") as mf:
         for n, (url, caption) in enumerate(items, start=1):
@@ -422,7 +464,7 @@ def main() -> None:
                     continue
                 downloaded += 1
                 try:
-                    frames = decode_video(tmp_path)
+                    frames = decode_video(tmp_path, want_frames=args.frames)
                 except Exception as e:  # noqa: BLE001
                     skipped += 1
                     reasons["decode_error"] = reasons.get("decode_error", 0) + 1
@@ -439,7 +481,7 @@ def main() -> None:
                     reasons["duplicate"] = reasons.get("duplicate", 0) + 1
                     continue
                 seen_hashes.add(h)
-                name = f"clip_{kept + 1:06d}.npy"
+                name = f"clip_{kept_offset + kept + 1:06d}.npy"
                 np.save(os.path.join(args.out, name), clip)
                 mf.write(json.dumps({"file": name, "caption": caption}) + "\n")
                 mf.flush()
@@ -457,7 +499,7 @@ def main() -> None:
     print(f"kept as clips:    {kept}")
     print(f"skipped:          {skipped} {reasons if reasons else ''}")
     print(f"dataset on disk:  {mb:.1f} MB in {args.out}")
-    print(f"manifest:         {manifest_path} ({kept} lines)")
+    print(f"manifest:         {manifest_path} ({existing_count + kept} lines)")
 
 
 if __name__ == "__main__":
