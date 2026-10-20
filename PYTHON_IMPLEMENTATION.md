@@ -245,6 +245,54 @@ Small preset (256×256, 33 frames) readiness, verified on this VM
 Small training settings for the GPU stage: batch 1–4 with
 `--grad-checkpoint` on a 16 GB card; real training is Stage 2 work.
 
+## 3D depth conditioning — Dawood's idea (2026-10-20)
+
+Dawood's proposal: if the model learns 3D mapping, video generation gets
+easier — a video is a camera moving through a 3D world, so a model shown the
+world's layout does not have to re-invent geometry every frame. Implemented
+as depth-map conditioning, end to end (`vidgen/depth.py` documents the
+design and its honest limits):
+
+- **Prep** — `scripts/prepare_clips.py --depth` estimates a depth map per
+  kept clip (MiDaS-small, per-clip normalized, larger = nearer), saves
+  `<clip>_depth.npy`, and records `"depth"` in the manifest.
+- **Data** — `FolderClipDataset.get_depth(i)` returns float `[1,T,H,W]`
+  in `[0,1]` or `None`; the `(tensor, caption)` sample contract is
+  unchanged.
+- **Model** — `VidgenConfig.use_depth` (default **off**, so all existing
+  checkpoints and code paths behave exactly as before). When on, the DiT
+  grows a zero-init `depth_stem` Conv3d: the map is reduced to the latent
+  grid by `depth_to_latent_grid` (temporal indices `[0,1,5,9,...]` aligned
+  to the causal VAE, spatial area-average) and the stem's tokens are added
+  to the latent tokens. Zero-init ⇒ a fresh depth model is exactly the
+  plain model until training teaches the stem.
+- **Training** — `vidgen.train --depth`; per-clip maps are fed, clips
+  without one contribute zeros, and whole-batch map dropout
+  (`--depth-dropout`, default 0.1, drawn from the checkpointed RNG) keeps
+  text-only generation strong — at text-to-video time there is no map
+  unless one is supplied. On resume, the mode is read from the
+  checkpoint's stored config, never from the CLI flag; `sample.py`
+  likewise rebuilds its config from the checkpoint.
+- **Sampling** — `sample_latents(..., depth=...)` and
+  `vidgen.sample --depth-npy <uint8 [T,H,W]>` steer a depth-trained model
+  with a fixed layout (depth conditions both CFG branches). The sampler
+  passes the depth argument only when a map is supplied, so pre-depth
+  models (and test doubles) keep working untouched.
+
+Tests: `tests/test_depth.py` (15 tests) — config gate and old-checkpoint
+roundtrip, grid alignment, zero-init invariance, signal after the stem
+wakes, gradient flow, misuse errors, dataset loading, a depth train step
++ resume keeping the mode, plain resume staying plain, sampler path, and
+estimator input validation (the estimator's weights download is not
+exercised on this VM). Full suite after this change: **87 passed,
+2 skipped** (was 72 passed, 2 skipped).
+
+Not yet proven (needs the GPU stage): that depth conditioning measurably
+improves consistency at Small/480p — that comparison is Stage 2/3
+measurement work, and the first depth-prepped dataset arrives with the
+256×256 re-prep. Depth here is relative and single-view (the visible
+surface only); it is a strong geometric hint, not a true 3D model.
+
 ## Verification evidence (2026-10-18, this VM: 2 CPU cores, no GPU)
 
 - `pytest tests/ -q`: **49 passed, 2 skipped** (GPU-only tests), 0 failed (39 original + 10 new: real-clip dataset format/parity/errors, trainer `data_dir` smoke steps, and `prepare_clips.py` pure helpers).

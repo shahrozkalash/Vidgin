@@ -196,6 +196,20 @@ class DiT(nn.Module):
         self.grid = (cfg.token_t, cfg.token_h, cfg.token_w)
         patch_vol = cfg.patch_t * cfg.patch_h * cfg.patch_w
         self.proj_in = nn.Linear(cfg.latent_channels * patch_vol, d.dim)
+        # 3D depth conditioning (Dawood's idea, vidgen/depth.py): a depth map
+        # reduced to the latent grid is patchified by a single Conv3d whose
+        # kernel/stride equal the latent patch, embedded, and ADDED to the
+        # latent tokens, so every block sees the world's 3D layout. Zero-init
+        # (like AdaLN-Zero): a fresh depth model is exactly the plain model
+        # until training teaches the stem to speak. Absent unless the config
+        # opts in, so existing checkpoints load unchanged.
+        if getattr(cfg, "use_depth", False):
+            stem = nn.Conv3d(1, d.dim, kernel_size=self.patch, stride=self.patch)
+            nn.init.zeros_(stem.weight)
+            nn.init.zeros_(stem.bias)
+            self.depth_stem = stem
+        else:
+            self.depth_stem = None
         self.t_embedder = TimestepEmbedder(d.dim)
         # Shared AdaLN-Zero modulation (Part 6 audit: shared 6xD projection
         # saves >80% of modulation params vs per-block). Zero-init -> identity.
@@ -227,10 +241,31 @@ class DiT(nn.Module):
             self._pos_cache[key] = token_grid_positions(*self.grid, device=device)
         return self._pos_cache[key]
 
-    def forward(self, latent, timesteps, text, text_mask=None):
+    def forward(self, latent, timesteps, text, text_mask=None, depth=None):
         b = latent.shape[0]
         tok = patchify_latents(latent, self.patch)      # [B, N, C*p]
         x = self.proj_in(tok)
+        if self.depth_stem is not None:
+            if depth is None:
+                # No map supplied: the all-zeros "no map" condition the
+                # model also sees in training via depth dropout.
+                depth = torch.zeros(
+                    b, 1, self.cfg.latent_t, self.cfg.latent_h,
+                    self.cfg.latent_w, device=latent.device,
+                    dtype=latent.dtype)
+            expect = (b, 1, self.cfg.latent_t, self.cfg.latent_h,
+                      self.cfg.latent_w)
+            if tuple(depth.shape) != expect:
+                raise ValueError(
+                    f"depth must be latent-grid {expect} (build it with "
+                    f"vidgen.depth.depth_to_latent_grid), got "
+                    f"{tuple(depth.shape)}")
+            x = x + self.depth_stem(depth.to(latent.dtype)) \
+                .flatten(2).transpose(1, 2)
+        elif depth is not None:
+            raise ValueError(
+                "depth was passed but this DiT was built without depth "
+                "conditioning (config use_depth=False)")
         c = self.t_embedder(timesteps)
         mod9 = self.adaLN_shared(c).chunk(9, dim=-1)
         text, text_mask = self.text_proj(text, text_mask)

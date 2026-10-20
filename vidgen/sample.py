@@ -17,7 +17,8 @@ import numpy as np
 import torch
 
 from vidgen.checkpoint import load_checkpoint
-from vidgen.config import get_preset, resolve_device
+from vidgen.config import VidgenConfig, get_preset, resolve_device
+from vidgen.depth import depth_to_latent_grid
 from vidgen.dit.model import DiT
 from vidgen.extend import generate_long, new_frames_per_segment, segments_for_seconds
 from vidgen.sampler import sample_latents
@@ -82,13 +83,24 @@ def main() -> None:
     ap.add_argument("--frame-ms", type=int, default=0,
                     help="GIF frame duration ms; 0 = 62 for single clips, "
                          "290 for chained clips")
+    ap.add_argument("--depth-npy", default=None,
+                    help="optional uint8 [T,H,W] depth map .npy (larger = "
+                         "nearer) to steer a depth-trained checkpoint with "
+                         "a fixed 3D layout (vidgen/depth.py); single "
+                         "window only, not with --seconds/--segments")
     args = ap.parse_args()
 
     seed_everything(args.seed)
     device = resolve_device(args.device)
     payload = load_checkpoint(args.ckpt, map_location=device)
     assert payload["kind"] == "dit", f"not a DiT checkpoint: {args.ckpt}"
-    cfg = get_preset(payload["preset"])
+    # The checkpoint's stored config is authoritative (it records e.g.
+    # use_depth, which decides whether the DiT has a depth stem at all);
+    # older checkpoints without one fall back to the named preset.
+    if payload.get("config"):
+        cfg = VidgenConfig.from_dict(payload["config"])
+    else:
+        cfg = get_preset(payload["preset"])
 
     vae = CausalVAE().to(device).eval()
     if args.vae_ckpt or payload.get("vae_ckpt"):
@@ -103,6 +115,9 @@ def main() -> None:
     if segments <= 0 and args.seconds > 0:
         segments = segments_for_seconds(cfg, args.seconds, args.ctx_latent)
     chained = segments > 1
+    if chained and args.depth_npy:
+        raise SystemExit("--depth-npy steers a single native window; "
+                         "it cannot be combined with --seconds/--segments.")
     if chained:
         frames = generate_long(dit, vae, text_enc, cfg, args.prompt,
                                segments=segments, steps=args.steps,
@@ -115,11 +130,29 @@ def main() -> None:
     else:
         text, text_mask = text_enc([args.prompt])
         null_text, null_mask = text_enc.null_embedding()
+        depth = None
+        if args.depth_npy:
+            if not cfg.use_depth:
+                raise SystemExit(
+                    "--depth-npy given, but this checkpoint was trained "
+                    "without depth conditioning (use_depth=False); the map "
+                    "would have no input to enter through.")
+            arr = np.load(args.depth_npy)
+            want = (cfg.frames, cfg.height, cfg.width)
+            if arr.dtype != np.uint8 or arr.shape != want:
+                raise SystemExit(
+                    f"--depth-npy must be uint8 {want} (T,H,W), got "
+                    f"{arr.dtype} {arr.shape}")
+            d = torch.from_numpy(arr).to(torch.float32) / 255.0
+            depth = depth_to_latent_grid(
+                d.view(1, 1, *want).to(device),
+                cfg.latent_t, cfg.latent_h, cfg.latent_w)
         lat_shape = (1, cfg.latent_channels, cfg.latent_t, cfg.latent_h, cfg.latent_w)
         z = sample_latents(dit, lat_shape, text.to(device), text_mask.to(device),
                            null_text.to(device), null_mask.to(device),
                            method=args.method, num_steps=args.steps,
-                           cfg_scale=args.cfg, seed=args.seed, device=device)
+                           cfg_scale=args.cfg, seed=args.seed, device=device,
+                           depth=depth)
         with torch.no_grad():
             clip = vae.decode(z / cfg.latent_scale)  # [1,3,T,H,W] in [-1,1]
         frames = clip[0].permute(1, 2, 3, 0).cpu().numpy()  # [T,H,W,3]

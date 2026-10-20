@@ -6,6 +6,12 @@ then for each video: download -> decode -> center 17-frame temporal window ->
 center-crop to square -> resize to 64x64 -> quality/dedupe filters ->
 <uint8 (T,H,W,3) .npy> + one line in manifest.jsonl with a caption.
 
+With --depth, each kept clip also gets a 3D depth map (MiDaS estimate,
+uint8 (T,H,W), larger = nearer) saved as <clip>_depth.npy and recorded in
+the manifest as "depth" — the input Dawood's depth conditioning trains on
+(see vidgen/depth.py). The estimator downloads once at the first kept
+clip, so --depth needs internet at prep time.
+
 Usage (Pixabay, "City and people" theme — recommended: free key issued instantly):
   export PIXABAY_API_KEY=...   # free key shown right after signup at https://pixabay.com/api/docs/
   python scripts/prepare_clips.py --source pixabay \\
@@ -364,6 +370,10 @@ def main() -> None:
                     help="frames per clip (keep (T-1) %% 4 == 0 for the VAE)")
     ap.add_argument("--size", type=int, default=64,
                     help="square clip size in pixels (multiple of 16)")
+    ap.add_argument("--depth", action="store_true",
+                    help="also estimate a 3D depth map per kept clip "
+                         "(MiDaS; needs internet once) and record it in "
+                         "the manifest for depth-conditioned training")
     args = ap.parse_args()
 
     if (args.frames - 1) % 4 != 0:
@@ -483,7 +493,15 @@ def main() -> None:
                 seen_hashes.add(h)
                 name = f"clip_{kept_offset + kept + 1:06d}.npy"
                 np.save(os.path.join(args.out, name), clip)
-                mf.write(json.dumps({"file": name, "caption": caption}) + "\n")
+                rec = {"file": name, "caption": caption}
+                if args.depth:
+                    from vidgen.depth import estimate_depth
+
+                    dname = name[:-4] + "_depth.npy"
+                    np.save(os.path.join(args.out, dname),
+                            estimate_depth(clip))
+                    rec["depth"] = dname
+                mf.write(json.dumps(rec) + "\n")
                 mf.flush()
                 bytes_written += os.path.getsize(os.path.join(args.out, name))
                 kept += 1

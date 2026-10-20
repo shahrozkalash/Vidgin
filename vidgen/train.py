@@ -22,6 +22,7 @@ import torch.nn.functional as F
 
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
 from vidgen.config import get_preset, resolve_device
+from vidgen.depth import depth_to_latent_grid
 from vidgen.data.buckets import BucketSampler
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
@@ -39,10 +40,17 @@ class DiTTrainer:
                  device: str = "cpu", ckpt_dir: str | None = None,
                  log_path: str | None = None, cfg_dropout: float = 0.1,
                  vae_ckpt: str | None = None, data_dir: str | None = None,
-                 grad_checkpoint: bool = False):
+                 grad_checkpoint: bool = False,
+                 use_depth: bool = False, depth_dropout: float = 0.1):
         seed_everything(seed)
         self.seed = seed
         self.cfg = get_preset(preset)
+        if use_depth:
+            # Dawood's 3D idea (vidgen/depth.py): the DiT grows a depth
+            # stem and learns from each clip's 3D map. Recorded in every
+            # checkpoint's config; resume re-derives it from there.
+            self.cfg.use_depth = True
+        self.depth_dropout = depth_dropout
         self.device = torch.device(resolve_device(device))
         self.batch_size = batch_size
         self.cfg_dropout = cfg_dropout
@@ -109,7 +117,8 @@ class DiTTrainer:
         text = torch.where(drop.view(b, 1, 1), null_emb, text)
         text_mask = torch.where(drop.view(b, 1), null_mask, text_mask)
 
-        pred = self.dit(xt, t, text, text_mask)
+        depth = self._depth_batch(batch_idx) if self.cfg.use_depth else None
+        pred = self.dit(xt, t, text, text_mask, depth=depth)
         loss = flow_loss(pred, target)
 
         self.opt.zero_grad()
@@ -135,6 +144,33 @@ class DiTTrainer:
             self.logger.log(rec)
         self.step += 1
         return rec
+
+    # ------------------------------------------------------------ 3D depth
+    def _depth_batch(self, batch_idx) -> torch.Tensor:
+        """Assemble this batch's depth maps on the latent grid.
+
+        Clips without a map (and datasets that have none, like Moving
+        MNIST) contribute an all-zeros map — the same "no map" condition
+        the sampler uses. Whole-batch map dropout (``depth_dropout``,
+        drawn from the checkpointed RNG like caption dropout) keeps the
+        model honest at imagining geometry from text alone, because at
+        text-to-video time no map exists unless the user supplies one.
+        """
+        get = getattr(self.dataset, "get_depth", None)
+        items = []
+        for i in batch_idx:
+            d = get(i) if get is not None else None
+            if d is None:
+                d = torch.zeros(1, self.cfg.frames, self.cfg.height,
+                                self.cfg.width)
+            items.append(d)
+        depth = torch.stack(items).to(self.device)      # [B,1,T,H,W]
+        if self.depth_dropout > 0:
+            hide = float(torch.rand((), device=self.device)) < self.depth_dropout
+            if hide:
+                depth = torch.zeros_like(depth)
+        return depth_to_latent_grid(depth, self.cfg.latent_t,
+                                    self.cfg.latent_h, self.cfg.latent_w)
 
     # ------------------------------------------------------------ checkpoint
     def state_dict(self) -> dict:
@@ -168,6 +204,11 @@ class DiTTrainer:
 
         payload = load_checkpoint(path)
         kwargs.pop("preset", None)  # preset always comes from the checkpoint
+        # Depth mode too: a depth checkpoint needs the depth stem built
+        # BEFORE its weights load, and a plain checkpoint must not grow
+        # one. The checkpoint's stored config is the source of truth.
+        stored_cfg = payload.get("config") or {}
+        kwargs["use_depth"] = bool(stored_cfg.get("use_depth", False))
         tr = cls(preset=payload["preset"], **kwargs)  # fresh init reseeds RNG...
         tr.load_state_dict(payload)
         set_rng_states(payload["rng"])  # ...so restore the saved RNG state last
@@ -199,6 +240,15 @@ def main() -> None:
     ap.add_argument("--grad-checkpoint", action="store_true",
                     help="activation checkpointing for the DiT (needed to "
                          "train Small and larger presets in limited memory)")
+    ap.add_argument("--depth", action="store_true",
+                    help="train with 3D depth-map conditioning (Dawood's "
+                         "idea, vidgen/depth.py): each clip's depth map "
+                         "(prepared with prepare_clips.py --depth) is fed "
+                         "to the DiT. On --resume the mode comes from the "
+                         "checkpoint, not this flag.")
+    ap.add_argument("--depth-dropout", type=float, default=0.1,
+                    help="probability of hiding a whole batch's depth maps "
+                         "so text-only generation stays strong")
     args = ap.parse_args()
 
     if args.resume:
@@ -215,7 +265,8 @@ def main() -> None:
                         batch_size=args.batch_size, num_clips=args.num_clips,
                         device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
                         vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
-                        grad_checkpoint=args.grad_checkpoint)
+                        grad_checkpoint=args.grad_checkpoint,
+                        use_depth=args.depth, depth_dropout=args.depth_dropout)
     n_params = sum(p.numel() for p in tr.dit.parameters()) / 1e6
     print(f"preset={args.preset} dit_params={n_params:.1f}M "
           f"tokens={tr.cfg.num_tokens} device={tr.device}")

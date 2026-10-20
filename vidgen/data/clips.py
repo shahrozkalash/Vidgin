@@ -5,6 +5,11 @@ A data directory holds pre-processed clips as uint8 ``.npy`` files of shape
 
     {"file": "clip_000001.npy", "caption": "people crossing a city street"}
 
+A line may also carry a ``"depth"`` key naming a uint8 ``(T, H, W)`` depth
+map (larger = nearer) written by ``scripts/prepare_clips.py --depth`` —
+Dawood's 3D conditioning (see ``vidgen/depth.py``). :meth:`get_depth`
+loads it; clips without one simply have no map.
+
 Build such a directory with ``scripts/prepare_clips.py`` (see
 ``notebooks/prepare_clips_drive.ipynb`` for the Colab flow).
 
@@ -118,3 +123,28 @@ class FolderClipDataset(Dataset):
         t = t / 127.5 - 1.0
         caption = str(rec["caption"]).strip() or f"clip {os.path.basename(path)}"
         return t, caption
+
+    def get_depth(self, i: int):
+        """This clip's 3D depth map as float32 ``[1, T, H, W]`` in ``[0, 1]``
+        (larger = nearer), or ``None`` when the manifest entry has no
+        ``"depth"`` file. Kept separate from :meth:`__getitem__` so the
+        ``(tensor, caption)`` sample contract shared with Moving MNIST
+        never changes; the DiT trainer asks for maps only when training
+        with depth conditioning."""
+        rec = self.entries[int(i)]
+        name = rec.get("depth")
+        if not name:
+            return None
+        path = os.path.join(self.data_dir, str(name))
+        if not os.path.isfile(path):
+            return None
+        arr = np.load(path)
+        if arr.dtype != np.uint8:
+            raise ValueError(f"{path}: expected uint8 depth, got {arr.dtype}")
+        want = (self.frames, self.height, self.width)
+        if arr.shape != want:
+            raise ValueError(
+                f"{path}: expected depth shape {want} (T,H,W), got {arr.shape}"
+            )
+        t = torch.from_numpy(arr).to(torch.float32) / 255.0
+        return t.unsqueeze(0).contiguous()

@@ -18,11 +18,22 @@ from __future__ import annotations
 import torch
 
 
-def _cfg_velocity(model, x, t_batch, text, text_mask, null_text, null_mask, cfg_scale):
-    v_cond = model(x, t_batch, text, text_mask)
+def _call_model(model, x, t_batch, text, text_mask, depth):
+    # Pass depth ONLY when a map is supplied, so any model whose forward
+    # predates depth conditioning keeps working untouched.
+    if depth is None:
+        return model(x, t_batch, text, text_mask)
+    return model(x, t_batch, text, text_mask, depth=depth)
+
+
+def _cfg_velocity(model, x, t_batch, text, text_mask, null_text, null_mask,
+                  cfg_scale, depth=None):
+    # Depth (when given) conditions BOTH CFG branches: guidance is over the
+    # text, the 3D layout stays fixed — same rule as the prefix context.
+    v_cond = _call_model(model, x, t_batch, text, text_mask, depth)
     if null_text is None or cfg_scale == 1.0:
         return v_cond
-    v_uncond = model(x, t_batch, null_text, null_mask)
+    v_uncond = _call_model(model, x, t_batch, null_text, null_mask, depth)
     return v_uncond + cfg_scale * (v_cond - v_uncond)
 
 
@@ -35,12 +46,17 @@ def sample_latents(model, latent_shape: tuple,
                    cfg_scale: float = 7.5, seed: int = 0,
                    device: str = "cpu",
                    prefix_latent: torch.Tensor | None = None,
-                   prefix_t: int = 0) -> torch.Tensor:
+                   prefix_t: int = 0,
+                   depth: torch.Tensor | None = None) -> torch.Tensor:
     """Generate latents [B,C,t,h,w] from noise. method in {euler, midpoint, rk4}.
 
     With ``prefix_latent`` given, the first ``prefix_t`` latent frames are
     clamped to the rectified-flow interpolation between their initial noise
     and the context, so generation continues from a fixed past.
+
+    With ``depth`` given (latent-grid [B,1,latent_t,latent_h,latent_w], see
+    vidgen/depth.py), a depth-conditioned model is steered by that 3D
+    layout; omitted, the model imagines the geometry itself.
     """
     if method not in ("euler", "midpoint", "rk4"):
         raise ValueError(f"Unknown sampler {method!r}")
@@ -67,7 +83,8 @@ def sample_latents(model, latent_shape: tuple,
     def v(x_, t_):
         t_batch = torch.full((b,), t_, device=device)
         return _cfg_velocity(model, x_, t_batch, text, text_mask,
-                             null_text, null_mask, cfg_scale)
+                             null_text, null_mask, cfg_scale,
+                             depth=depth.to(device) if depth is not None else None)
 
     for i in range(num_steps):
         t = float(ts[i])

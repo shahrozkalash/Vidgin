@@ -37,6 +37,9 @@ class VidgenConfig:
     text_max_len: int = 32
     latent_scale: float = 1.0   # fixed latent normalizer (SD-style); applied in train
     target_params_m: float = 20.0  # documented preset size (millions), sanity only
+    use_depth: bool = False     # Dawood's 3D idea: depth-map conditioning (vidgen/depth.py).
+                                # Default off: every pre-2026-10-20 checkpoint and code path
+                                # behaves exactly as before; trainers opt in with --depth.
 
     # --- derived ---------------------------------------------------------
     @property
