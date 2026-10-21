@@ -37,6 +37,8 @@ It does not replace training or data; it spends them better.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -83,9 +85,36 @@ def zeros_latent_depth(cfg, batch: int, device, dtype=torch.float32) -> torch.Te
 _MIDAS = None  # (model, transform) lazily loaded once per process
 
 
+def _trust_hub_repo(owner_repo: str) -> None:
+    """Whitelist a torch.hub repo without an interactive prompt.
+
+    MiDaS builds its EfficientNet backbone through an *inner*
+    ``torch.hub.load("rwightman/gen-efficientnet-pytorch", ...)`` that
+    cannot pass ``trust_repo=True``. On a fresh machine torch.hub stops
+    and asks "(y/N)?" on stdin — in a script or notebook that prompt
+    never gets an answer and the load hangs forever (found the hard way,
+    2026-10-21). Adding the repo to ``<hub dir>/trusted_list`` — the same
+    file ``trust_repo=True`` writes — is the documented way out. A
+    read-only hub cache just keeps the old behavior, so failures are
+    swallowed.
+    """
+    try:
+        path = os.path.join(torch.hub.get_dir(), "trusted_list")
+        existing = ""
+        if os.path.exists(path):
+            with open(path) as f:
+                existing = f.read()
+        if owner_repo not in existing.split():
+            with open(path, "a") as f:
+                f.write(owner_repo + "\n")
+    except OSError:
+        pass
+
+
 def _load_midas(device: str):
     global _MIDAS
     if _MIDAS is None:
+        _trust_hub_repo("rwightman/gen-efficientnet-pytorch")
         try:
             model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small",
                                    trust_repo=True)

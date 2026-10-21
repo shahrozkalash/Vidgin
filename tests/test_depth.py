@@ -218,3 +218,15 @@ def test_estimate_depth_validates_input_without_network():
         estimate_depth(np.zeros((17, 64, 64, 3), dtype=np.float32))
     with pytest.raises(ValueError):
         estimate_depth(np.zeros((64, 64, 3), dtype=np.uint8))
+
+
+def test_trust_hub_repo_writes_trusted_list(tmp_path, monkeypatch):
+    """The backbone-repo whitelist lands in trusted_list, exactly once."""
+    from vidgen import depth
+
+    monkeypatch.setattr(torch.hub, "get_dir", lambda: str(tmp_path))
+    depth._trust_hub_repo("rwightman/gen-efficientnet-pytorch")
+    listed = (tmp_path / "trusted_list").read_text().split()
+    assert listed == ["rwightman/gen-efficientnet-pytorch"]
+    depth._trust_hub_repo("rwightman/gen-efficientnet-pytorch")  # idempotent
+    assert (tmp_path / "trusted_list").read_text().split() == listed
