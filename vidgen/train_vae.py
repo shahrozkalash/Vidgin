@@ -59,6 +59,7 @@ class VAETrainer:
         self.step = 0
         self.logger = StructuredLogger(log_path) if log_path else None
         self.loss_history: list[float] = []
+        self.init_from: str | None = None
 
     def train_step(self) -> dict:
         batch_idx = self.sampler.next_batch()
@@ -98,6 +99,23 @@ class VAETrainer:
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
 
+    def load_vae_weights(self, path: str) -> None:
+        """Weights-only warm start from a donor VAE checkpoint.
+
+        Copies just the trained VAE weights (e.g. Round-1 tiny VAE) into this
+        fresh trainer. Optimizer, step counter, loss history and RNG stay
+        fresh — this is a new run, not a resume. The VAE architecture is
+        preset-independent, so a tiny checkpoint can initialize the Small VAE;
+        any shape mismatch raises immediately (strict load).
+        """
+        payload = load_checkpoint(path)  # restores the donor's RNG state...
+        seed_everything(self.seed)       # ...which a fresh run must not keep
+        if payload.get("kind") != "vae" or "vae" not in payload:
+            raise ValueError(
+                f"{path} is not a VAE checkpoint (kind={payload.get('kind')!r})")
+        self.vae.load_state_dict(payload["vae"])  # strict: mismatched shapes raise
+        self.init_from = path
+
     def save(self, path: str) -> None:
         save_checkpoint(path, self.state_dict())
 
@@ -131,11 +149,19 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=6)
     ap.add_argument("--log", default=None)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--init-weights", default=None, metavar="PATH",
+                    help="weights-only warm start: initialize the VAE from a donor "
+                         "VAE checkpoint (e.g. the Round-1 tiny VAE) and train as a "
+                         "fresh run. The VAE architecture is preset-independent, so "
+                         "this works across presets. Mutually exclusive with --resume.")
     ap.add_argument("--data-dir", default=None,
                     help="prepared real-clip dataset dir (manifest.jsonl + .npy clips); "
                          "when set, it replaces Moving MNIST")
     args = ap.parse_args()
 
+    if args.resume and args.init_weights:
+        ap.error("--resume and --init-weights are mutually exclusive: "
+                 "resume continues a run, warm start begins a fresh one")
     if args.resume:
         tr = VAETrainer.resume(
             args.resume, seed=args.seed, lr=args.lr, kl_weight=args.kl_weight,
@@ -149,6 +175,9 @@ def main() -> None:
                         num_clips=args.num_clips, device=args.device,
                         ckpt_dir=args.ckpt_dir, log_path=args.log,
                         data_dir=args.data_dir)
+        if args.init_weights:
+            tr.load_vae_weights(args.init_weights)
+            print(f"warm-started VAE weights from {args.init_weights}")
     n_params = sum(p.numel() for p in tr.vae.parameters()) / 1e6
     print(f"preset={args.preset} vae_params={n_params:.2f}M device={tr.device}")
 
