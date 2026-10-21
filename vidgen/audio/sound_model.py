@@ -182,6 +182,12 @@ class AudioDiTBlock(nn.Module):
         super().__init__()
         self.heads = heads
         self.head_dim = dim // heads
+        if sum(rope_split) != self.head_dim:
+            # Configured split was sized for a different head_dim (e.g. the
+            # small test/training configs): re-derive an even split that
+            # sums to this block's actual head_dim.
+            half = (self.head_dim // 4) * 2
+            rope_split = (half, self.head_dim - half)
         self.rope_split = rope_split
 
         # AdaLN-Zero parameters: 6 scale/shift/gate multipliers
