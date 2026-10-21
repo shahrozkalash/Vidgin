@@ -15,3 +15,8 @@ numpy
 pytest
 google-genai
 pillow
+edge-tts
+diffusers
+transformers
+scipy
+soundfile

@@ -33,8 +33,9 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector (Pixabay/Pexels) → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
 | `scripts/harvest_urls.py` | Part 1 | No-API-key URL harvester (stdlib only): fetches stock search pages with a browser User-Agent and extracts direct `.mp4` file URLs from the embedded HTML (Pexels: `videos.pexels.com/video-files/<id>/<id>-<variant>.mp4`, pagination via `?page=N`, one sd variant per video; Pixabay: optional secondary source, `_tiny`→`_medium` suffix swap kept only when HEAD returns 200). Pure-function parsing (`extract_pexels_urls`, `choose_variant`) unit-tested without network. Writes `urls.txt` for `prepare_clips.py --source urls` |
 | `scripts/caption_clips.py` | Part 1/5 | 100% Free Tier Gemini vision captioner for prepared clips: replaces weak file/tag captions with dense 15-30 word scene descriptions (subject, action, setting, camera move, lighting); 3 frames resized to ≤512px; paced at 6s with `--max-calls` cap (default 240); graceful HTTP 429 quota handling; resume-safe atomic updates |
-| `requirements.txt` | — | `torch`, `numpy`, `pytest`, `google-genai`, `pillow` (CPU index for torch; Pillow optional) |
-| `tests/` | — | 101 tests mirroring the README's CPU suite + captioning, depth, extend, and real-clip helpers |
+| `scripts/add_audio.py` | Post-proc | 100% Free audio stage for silent clips: voice synthesis (edge-tts / Piper), lip-sync (Wav2Lip on original video + clean voice), ambient background sound (AudioLDM2 / scene map), ducking (35% under speech), normalization & ffmpeg muxing |
+| `requirements.txt` | — | `torch`, `numpy`, `pytest`, `google-genai`, `pillow`, `edge-tts`, `diffusers`, `transformers`, `scipy`, `soundfile` |
+| `tests/` | — | 114 tests mirroring the README's CPU suite + captioning, audio stage, depth, extend, and real-clip helpers |
 
 ## Notable design decisions / spec deviations
 
@@ -344,6 +345,54 @@ python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/ti
 ```
 
 Tests: `tests/test_caption_clips.py` (12 tests) verifies frame extraction, resizing, manifest updates, depth key preservation, resume-skip, overwrite, pacing stop, 429 quota handling, and API key prompts using a mocked client.
+
+## Audio: voice, background sound, and lip-sync (`scripts/add_audio.py`)
+
+Vidgin generates silent video only. `scripts/add_audio.py` is a standalone post-processing pipeline that gives a finished silent video voice, background sound, and lip-sync (the mouth moving in synchronization with spoken dialogue).
+
+### Pipeline Order
+The tool strictly processes audio and video in this exact sequence:
+1. **Voice first**: Synthesizes spoken dialogue (if `--dialogue` is provided) into a clean voice track. Dialogue starts at 0.5s into the clip, and the audio is padded or trimmed with silence to fit the video's exact duration.
+2. **Lip-sync**: Runs face detection on sample frames. If a face is found, runs open-source Wav2Lip on the **original silent video** + the **clean voice track** (never on the mixed track). If no face is detected, it prints a clear warning and skips lip-sync while keeping the original video stream.
+3. **Background sound**: Plans the sound description from `--sound`, built-in scene keywords ("city", "street", "traffic", "rain", "beach", "forest", "crowd"), or optional Gemini free-tier expansion, and generates ambience with AudioLDM2 (diffusers) looped/trimmed to the video's exact duration.
+4. **Mixing & Muxing**: Mixes voice over background with ducking (background at 100% normally, ducking to 35% while voice speaks), normalizes loudness to -1 dB peak, and muxes video + audio into `--out` using `ffmpeg` without re-encoding video if possible.
+
+### 100% Free & Open-Source Design
+- **Zero Budget ($0 Cost)**: Runs exclusively on open-source models, free-tier APIs, and offline tools. Fits comfortably on a free Google Colab T4 GPU.
+- **Voice TTS**: Default is Microsoft `edge-tts` (free, no API key required). Fallback to `piper` offline TTS if no network is available.
+- **Lip-Sync**: Open-source `Wav2Lip` (`https://github.com/Rudrabha/Wav2Lip`, Non-Commercial / Academic Research license).
+- **Background Ambience**: Open-source `AudioLDM2` (`cvssp/audioldm2` via Hugging Face `diffusers`).
+- **Keys**: Any optional API key (e.g. `GEMINI_API_KEY` for ambient prompt expansion) comes ONLY from environment variables or `getpass` prompt. Never hardcoded, printed, or saved.
+- **System Dependencies**: Requires `ffmpeg` and `ffprobe` installed on the host system.
+
+### Honest Conditions in Plain Words
+- **Lip-sync needs a visible face**: Lip-sync requires a human face visible in the video, reasonably large and facing the camera.
+- **Resolution matters**: It works best at **256×256 and above**. At **64×64** (such as Tiny preset clips), faces are too small and blurry for face detection and Wav2Lip; the tool detects this, prints:
+  `Warning: No face found — lip-sync skipped, voice and background sound still added`
+  and cleanly continues with voice and background mixing without crashing.
+- **Background sound generation**: Ambience is generated from the **caption text and scene keywords**, not by analyzing the video's pixels.
+- **Speech quality**: Speech naturalness depends on the free TTS voice selected (`--voice-name`, default `en-US-ChristopherNeural`).
+
+### How to Run
+
+```bash
+# 1. 5-second city-street clip with character dialogue and automatic lip-sync
+python scripts/add_audio.py \
+    --video outputs/city_walk.mp4 \
+    --caption "A person walking down a busy city street in afternoon sunlight" \
+    --dialogue "We are almost there" \
+    --out outputs/city_walk_audio.mp4
+
+# 2. Custom background sound override and explicit lip-sync off
+python scripts/add_audio.py \
+    --video outputs/nature.mp4 \
+    --caption "A mountain stream in a forest" \
+    --sound "rushing water, gentle wind in pine trees" \
+    --lipsync off \
+    --out outputs/nature_audio.mp4
+```
+
+Tests: `tests/test_add_audio.py` (13 tests) verifies scene-to-sound mapping, duration math & padding/trimming, strict pipeline execution order, face-missing warning handling, `--lipsync off` behavior, ducking gain levels, and missing-ffmpeg error handling.
 
 ## Verification evidence (2026-10-18, this VM: 2 CPU cores, no GPU)
 
