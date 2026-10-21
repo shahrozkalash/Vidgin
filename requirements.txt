@@ -13,3 +13,5 @@
 torch
 numpy
 pytest
+google-genai
+pillow
