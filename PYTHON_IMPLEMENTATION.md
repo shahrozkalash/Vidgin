@@ -33,9 +33,12 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector (Pixabay/Pexels) → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
 | `scripts/harvest_urls.py` | Part 1 | No-API-key URL harvester (stdlib only): fetches stock search pages with a browser User-Agent and extracts direct `.mp4` file URLs from the embedded HTML (Pexels: `videos.pexels.com/video-files/<id>/<id>-<variant>.mp4`, pagination via `?page=N`, one sd variant per video; Pixabay: optional secondary source, `_tiny`→`_medium` suffix swap kept only when HEAD returns 200). Pure-function parsing (`extract_pexels_urls`, `choose_variant`) unit-tested without network. Writes `urls.txt` for `prepare_clips.py --source urls` |
 | `scripts/caption_clips.py` | Part 1/5 | 100% Free Tier Gemini vision captioner for prepared clips: replaces weak file/tag captions with dense 15-30 word scene descriptions (subject, action, setting, camera move, lighting); 3 frames resized to ≤512px; paced at 6s with `--max-calls` cap (default 240); graceful HTTP 429 quota handling; resume-safe atomic updates |
-| `scripts/add_audio.py` | Post-proc | 100% Free audio stage for silent clips: voice synthesis (edge-tts / Piper), lip-sync (Wav2Lip on original video + clean voice), ambient background sound (AudioLDM2 / scene map), ducking (35% under speech), normalization & ffmpeg muxing |
-| `requirements.txt` | — | `torch`, `numpy`, `pytest`, `google-genai`, `pillow`, `edge-tts`, `diffusers`, `transformers`, `scipy`, `soundfile` |
-| `tests/` | — | 114 tests mirroring the README's CPU suite + captioning, audio stage, depth, extend, and real-clip helpers |
+| `vidgen/audio/` | Audio | Vidgin's own audio brain: `mel.py` (22050 Hz / 80 mels), `sound_model.py` (~71M Audio DiT), `vocoder.py` (~2.6M HiFi-GAN), `voice_model.py` (~11.4M Voice TTS). 100% in-repo code, zero external models, zero downloaded weights |
+| `scripts/prepare_audio_data.py` | Audio | Prepares training data from FREE, no-key public sources: LJSpeech-1.1 (Public Domain / CC0) for voice; ESC-50 and UrbanSound8K subsets (CC-BY-NC 3.0) for sound; synthetic CPU generator |
+| `scripts/train_audio.py` | Audio | Unified trainer adhering to `vidgen/train.py` conventions (--target sound, voice, vocoder); bit-for-bit resume, AdamW, RNG state saving |
+| `scripts/add_audio.py` | Post-proc | End-to-end audio tool: plans scene sound, synthesizes voice dialogue + background ambience via in-repo checkpoints, ducks background (35% under speech), normalizes to -1 dB, muxes with ffmpeg, verifies with ffprobe |
+| `requirements.txt` | — | `torch`, `numpy`, `pytest`, `pillow`, `scipy`, `soundfile` |
+| `tests/test_audio.py` | Audio | Purity test (scans for forbidden external models/URLs) + parameter count contracts + mel math + forward pass shape tests |
 
 ## Notable design decisions / spec deviations
 
@@ -346,53 +349,114 @@ python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/ti
 
 Tests: `tests/test_caption_clips.py` (12 tests) verifies frame extraction, resizing, manifest updates, depth key preservation, resume-skip, overwrite, pacing stop, 429 quota handling, and API key prompts using a mocked client.
 
-## Audio: voice, background sound, and lip-sync (`scripts/add_audio.py`)
+## Vidgin's own audio brain (`vidgen/audio/`)
 
-Vidgin generates silent video only. `scripts/add_audio.py` is a standalone post-processing pipeline that gives a finished silent video voice, background sound, and lip-sync (the mouth moving in synchronization with spoken dialogue).
+Vidgin generates silent video. Rather than relying on external APIs, closed services, or third-party pretrained weights, Vidgin incorporates its **OWN audio brain**, engineered directly inside this repository, so generated videos gain background sound and a speaking voice that are 100% Vidgin's.
 
-### Pipeline Order
-The tool strictly processes audio and video in this exact sequence:
-1. **Voice first**: Synthesizes spoken dialogue (if `--dialogue` is provided) into a clean voice track. Dialogue starts at 0.5s into the clip, and the audio is padded or trimmed with silence to fit the video's exact duration.
-2. **Lip-sync**: Runs face detection on sample frames. If a face is found, runs open-source Wav2Lip on the **original silent video** + the **clean voice track** (never on the mixed track). If no face is detected, it prints a clear warning and skips lip-sync while keeping the original video stream.
-3. **Background sound**: Plans the sound description from `--sound`, built-in scene keywords ("city", "street", "traffic", "rain", "beach", "forest", "crowd"), or optional Gemini free-tier expansion, and generates ambience with AudioLDM2 (diffusers) looped/trimmed to the video's exact duration.
-4. **Mixing & Muxing**: Mixes voice over background with ducking (background at 100% normally, ducking to 35% while voice speaks), normalizes loudness to -1 dB peak, and muxes video + audio into `--out` using `ffmpeg` without re-encoding video if possible.
+### The Ownership Rule
+The paramount rule of this architecture: **NO third-party AI models. No SadTalker, no Wav2Lip, no AudioLDM, no TTS APIs or cloud services (no edge-tts, no Gemini audio), and NO pretrained weights of any kind, anywhere.**
 
-### 100% Free & Open-Source Design
-- **Zero Budget ($0 Cost)**: Runs exclusively on open-source models, free-tier APIs, and offline tools. Fits comfortably on a free Google Colab T4 GPU.
-- **Voice TTS**: Default is Microsoft `edge-tts` (free, no API key required). Fallback to `piper` offline TTS if no network is available.
-- **Lip-Sync**: Open-source `Wav2Lip` (`https://github.com/Rudrabha/Wav2Lip`, Non-Commercial / Academic Research license).
-- **Background Ambience**: Open-source `AudioLDM2` (`cvssp/audioldm2` via Hugging Face `diffusers`).
-- **Keys**: Any optional API key (e.g. `GEMINI_API_KEY` for ambient prompt expansion) comes ONLY from environment variables or `getpass` prompt. Never hardcoded, printed, or saved.
-- **System Dependencies**: Requires `ffmpeg` and `ffprobe` installed on the host system.
+Every audio model is defined in this repo's PyTorch code (`vidgen/audio/`), randomly initialized, and trained by this repo's own training code (`scripts/train_audio.py`) on free, legally clean public data. Standard libraries and system tools (PyTorch for tensors, ffmpeg for muxing) are used for infrastructure; the models, architectures, and weights are ours.
 
-### Honest Conditions in Plain Words
-- **Lip-sync needs a visible face**: Lip-sync requires a human face visible in the video, reasonably large and facing the camera.
-- **Resolution matters**: It works best at **256×256 and above**. At **64×64** (such as Tiny preset clips), faces are too small and blurry for face detection and Wav2Lip; the tool detects this, prints:
-  `Warning: No face found — lip-sync skipped, voice and background sound still added`
-  and cleanly continues with voice and background mixing without crashing.
-- **Background sound generation**: Ambience is generated from the **caption text and scene keywords**, not by analyzing the video's pixels.
-- **Speech quality**: Speech naturalness depends on the free TTS voice selected (`--voice-name`, default `en-US-ChristopherNeural`).
+### What Each Model Learns
 
-### How to Run
+1. **Log-Mel Spectrogram Utilities (`vidgen/audio/mel.py`)**:
+   Standard acoustic representation across all models: sample rate 22050 Hz, 80 mel frequency bins, 1024-point FFT with Hann window, and hop length 256. Constructed in pure PyTorch with triangular mel filterbank basis and Griffin-Lim fallback phase reconstruction.
+2. **Audio Diffusion DiT (`vidgen/audio/sound_model.py`) — ~70.86M Parameters**:
+   A small text-conditioned audio diffusion transformer (Audio DiT) that generates 80-channel log-mel spectrograms from text captions. Reuses Vidgin's exact block patterns: 2D spacetime/frequency-time patchify, 2D partitioned RoPE (frequency, time) for spatial and temporal translation invariance, AdaLN-Zero timestep modulation, self-attention, and text cross-attention. Learns rectified flow velocity fields ($x_1 - x_0$) with shifted logit-normal scheduling ($s=5.0$) and 10% caption dropout for classifier-free guidance (CFG).
+3. **HiFi-GAN Vocoder (`vidgen/audio/vocoder.py`) — ~2.64M Parameters**:
+   Vidgin's in-repo neural vocoder mapping log-mel spectrograms back to time-domain audio waveforms. Generator employs 4 transposed convolutions (upsample factors $[8, 8, 2, 2]$ for $256\times$ total upsampling) coupled with Multi-Receptive Field Fusion (MRF) ResNet blocks with kernel sizes $[3, 7, 11]$ and dilations $[1, 3, 5]$. Trained against Multi-Period Discriminators (MPD) and Multi-Scale Discriminators (MSD) using feature matching loss, adversarial loss, and $45\times$ mel spectral L1 loss.
+4. **Single-Speaker Voice TTS (`vidgen/audio/voice_model.py`) — ~11.42M Parameters**:
+   A compact single-speaker Transformer text-to-mel TTS model. Features a character-level English tokenizer, 6-layer Transformer text encoder ($\text{dim}=256$), 2-layer 1D Conv duration predictor and length regulator alignment mechanism, 6-layer Transformer mel decoder, and 5-layer convolutional Post-Net refinement. Outputs 80-channel log-mel spectrograms ready for synthesis by the vocoder.
+
+### Training Data Sources & Licenses (100% Free, No-Key Required)
+
+Data is prepared using `scripts/prepare_audio_data.py`:
+- **Voice**: **LJSpeech-1.1** (~24 hours of audio, 13,100 clips, single English female speaker).
+  - *License*: **Public Domain (LibriVox / CC0)**.
+  - Downloaded and resampled to 22050 Hz mono, producing `manifest_voice.jsonl` with `{"wav": ..., "text": ...}`.
+- **Background Sound**: **ESC-50** (2,000 environmental clips in 50 categories) and **UrbanSound8K** subset.
+  - *License*: **Creative Commons Attribution-NonCommercial (CC-BY-NC 3.0)**.
+  - Each clip's class label is mapped to a rich diffusion caption via a curated template map (e.g. `"rain"` $\to$ `"steady rainfall with gentle falling water drops"`, `"traffic"` $\to$ `"busy city traffic and passing cars"`), producing `manifest_sound.jsonl`.
+- **Vocoder Ground Truth**: Ground-truth log-mels and waveforms combined from voice + sound datasets (`manifest_vocoder.jsonl`).
+- **Synthetic CPU Smoke**: `scripts/prepare_audio_data.py --synthetic` generates deterministic synthetic audio and manifests instantly for local and CI testing without internet access.
+
+### Colab Training Sequence (Exact Commands in Order)
+
+All three models train within a single free Google Colab T4 GPU instance (16 GB VRAM). Train in this exact sequence:
 
 ```bash
-# 1. 5-second city-street clip with character dialogue and automatic lip-sync
-python scripts/add_audio.py \
-    --video outputs/city_walk.mp4 \
-    --caption "A person walking down a busy city street in afternoon sunlight" \
-    --dialogue "We are almost there" \
-    --out outputs/city_walk_audio.mp4
+# 0. Prepare training data (or use --synthetic for smoke test)
+python scripts/prepare_audio_data.py --target all --out-dir data/audio
 
-# 2. Custom background sound override and explicit lip-sync off
-python scripts/add_audio.py \
-    --video outputs/nature.mp4 \
-    --caption "A mountain stream in a forest" \
-    --sound "rushing water, gentle wind in pine trees" \
-    --lipsync off \
-    --out outputs/nature_audio.mp4
+# Step 1: Train the Vocoder (mel -> waveform)
+# Learns audio reconstruction on ground-truth mels from both voice and sound clips
+python scripts/train_audio.py \
+    --target vocoder \
+    --steps 20000 \
+    --batch-size 8 \
+    --lr 2e-4 \
+    --device cuda \
+    --data-manifest data/audio/manifest_vocoder.jsonl \
+    --ckpt-dir checkpoints/vocoder \
+    --log checkpoints/vocoder/train.jsonl
+
+# Step 2: Train the Sound DiT Model (caption -> mel)
+# Learns rectified flow diffusion for ambient scene sound
+python scripts/train_audio.py \
+    --target sound \
+    --steps 15000 \
+    --batch-size 8 \
+    --lr 1e-4 \
+    --device cuda \
+    --data-manifest data/audio/manifest_sound.jsonl \
+    --ckpt-dir checkpoints/sound \
+    --log checkpoints/sound/train.jsonl
+
+# Step 3: Train the Voice TTS Model (text -> mel)
+# Learns character alignment and speech mel synthesis for ONE speaker
+python scripts/train_audio.py \
+    --target voice \
+    --steps 15000 \
+    --batch-size 8 \
+    --lr 2e-4 \
+    --device cuda \
+    --data-manifest data/audio/manifest_voice.jsonl \
+    --ckpt-dir checkpoints/voice \
+    --log checkpoints/voice/train.jsonl
 ```
 
-Tests: `tests/test_add_audio.py` (13 tests) verifies scene-to-sound mapping, duration math & padding/trimming, strict pipeline execution order, face-missing warning handling, `--lipsync off` behavior, ducking gain levels, and missing-ffmpeg error handling.
+### Running the Post-Processing Tool (`scripts/add_audio.py`)
+
+Takes a generated silent video and equips it with background audio and optional spoken dialogue:
+
+```bash
+# Video with background ambience matching the video's scene prompt
+python scripts/add_audio.py \
+    --video outputs/nature_clip.mp4 \
+    --caption "steady rainfall with gentle drops on green leaves" \
+    --out outputs/nature_with_audio.mp4
+
+# Video with both spoken dialogue and ducked background sound
+python scripts/add_audio.py \
+    --video outputs/street_clip.mp4 \
+    --caption "city traffic and passing cars" \
+    --dialogue "we are heading downtown now" \
+    --out outputs/street_with_dialogue.mp4
+```
+
+- **Ducking**: Background sound plays at 100% volume, automatically ducking to 35% during speech activity with smooth gain transitions.
+- **Normalization & Mux**: Peak loudness normalized to -1 dB (0.891), multiplexed into MP4 with AAC audio via `ffmpeg`.
+- **Strict Verification**: If any required checkpoint is missing, the tool prints the exact `train_audio.py` command needed to train it and terminates. It NEVER falls back to any external model or third-party service.
+
+### Honest v1 Limits in Plain Words
+- **v1 Voice is ONE voice**: Single English speaker (LJSpeech), modest quality. It does not do multi-speaker or multilingual voice cloning in v1.
+- **v1 Sound knows a small world**: Atmospheric ambience focused on Vidgin's video themes (city, street, traffic, rain, storm, ocean, beach, forest, nature, crowd, campfire).
+- **Growth path**: Both models scale with data volume and training steps, following the exact same ladder as the video DiT models.
+
+### Architectural Decision: Lip-Sync and Facial Expressions
+Lip-sync and facial expressions are **NOT tools and will NOT be built from outside models** (no Wav2Lip, SadTalker, or third-party mesh warping). 
+In Vidgin's philosophy, natural talking faces, jaw motion, and facial expressions come directly from the **video brain itself**, trained on real video footage of people speaking (a designated future data theme). This ensures faces move with natural physics, lighting, and anatomy, rather than pasted-on mouth patches.
 
 ## Verification evidence (2026-10-18, this VM: 2 CPU cores, no GPU)
 
