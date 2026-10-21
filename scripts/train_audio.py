@@ -110,6 +110,9 @@ def load_audio_tensor(wav_path: str, max_duration: float = 3.0, sr: int = 22050)
         n_frames = wf.getnframes()
         raw = wf.readframes(n_frames)
 
+    # Tolerate truncated files: trust the bytes actually read, not the header.
+    n_frames = len(raw) // (s_width * n_ch)
+
     fmt = f"<{n_frames * n_ch}h" if s_width == 2 else None
     if fmt is None:
         raise ValueError(f"Unsupported sample width: {s_width}")
