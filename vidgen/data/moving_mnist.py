@@ -136,6 +136,7 @@ class MovingMNISTDataset(Dataset):
         num_digits: int = 2,
         base_seed: int = 0,
         letterbox: bool = True,
+        shard: tuple[int, int] | None = None,
     ):
         self.num_clips = num_clips
         self.height = height
@@ -144,11 +145,31 @@ class MovingMNISTDataset(Dataset):
         self.num_digits = num_digits
         self.base_seed = base_seed
         self.letterbox = letterbox
+        # Optional weight-averaging pool shard (vidgen/pool.py): local
+        # index j maps to global clip index positions[j], so item content
+        # (seeded by base_seed + global index) is identical to the
+        # unsharded dataset's item at that global index. No shard = the
+        # original identity mapping.
+        self.shard = shard
+        self._positions: list[int] | None = None
+        if shard is not None:
+            from vidgen.pool import shard_positions
+
+            self._positions = shard_positions(num_clips, shard)
+            if not self._positions:
+                raise ValueError(
+                    f"data shard {shard} selects no clips "
+                    f"(num_clips={num_clips} too small)"
+                )
 
     def __len__(self) -> int:
+        if self._positions is not None:
+            return len(self._positions)
         return self.num_clips
 
     def __getitem__(self, i: int):
+        if self._positions is not None:
+            i = self._positions[int(i)]
         clip, caption = generate_moving_mnist_clip(
             seed=self.base_seed + int(i),
             num_digits=self.num_digits,

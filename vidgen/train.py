@@ -14,6 +14,10 @@ Usage (CPU smoke):
 Multi-GPU (DDP, opt-in via torchrun; --batch-size is PER GPU there):
   torchrun --standalone --nproc_per_node=2 -m vidgen.train --preset small \\
       --depth --grad-checkpoint --batch-size 2 --device cuda ...
+
+Weight-averaging pool worker (one round; see PYTHON_IMPLEMENTATION.md):
+  python -m vidgen.train --preset small --init-weights pooled.pt \\
+      --data-shard 2/4 --steps 500 --ckpt-dir ckpts/worker2 ...
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.flow import flow_loss, rectified_flow_targets, sample_shifted_logit_normal, timestep_bins
 from vidgen.logging import StructuredLogger
+from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.dit.model import DiT
@@ -59,6 +64,7 @@ class DiTTrainer:
                  vae_ckpt: str | None = None, data_dir: str | None = None,
                  grad_checkpoint: bool = False,
                  use_depth: bool = False, depth_dropout: float = 0.1,
+                 data_shard: tuple[int, int] | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -100,16 +106,20 @@ class DiTTrainer:
         params = list(self.dit.parameters()) + list(self.text_enc.parameters())
         self.opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
+        # Optional pool worker shard (vidgen/pool.py): this worker trains
+        # only on its disjoint slice of the dataset. None = full dataset,
+        # the original behavior exactly.
+        self.data_shard = data_shard
         if data_dir:
             self.dataset = FolderClipDataset(
                 data_dir, height=self.cfg.height, width=self.cfg.width,
-                frames=self.cfg.frames)
+                frames=self.cfg.frames, shard=data_shard)
             num_items = len(self.dataset)
         else:
             self.dataset = MovingMNISTDataset(
                 num_clips, height=self.cfg.height, width=self.cfg.width,
-                frames=self.cfg.frames, base_seed=seed + 1)
-            num_items = num_clips
+                frames=self.cfg.frames, base_seed=seed + 1, shard=data_shard)
+            num_items = len(self.dataset)
         # Distributed data sharding: ONE sampler, identically seeded on
         # every rank, draws global batches of batch_size * world_size;
         # each rank trains on its own disjoint slice (see _next_batch_idx).
@@ -124,6 +134,7 @@ class DiTTrainer:
         self.logger = (StructuredLogger(log_path)
                        if log_path and self.is_main_rank else None)
         self.loss_history: list[float] = []
+        self.init_from: str | None = None
 
         # DDP wrap LAST: the optimizer, checkpoint loading and warm paths
         # all reference the raw modules' parameters (identical objects
@@ -268,6 +279,41 @@ class DiTTrainer:
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
 
+    def load_dit_weights(self, path: str,
+                         start_step: int | None = None) -> None:
+        """Weights-only init from a donor DiT checkpoint.
+
+        Mirrors VAETrainer.load_vae_weights: copies just the trained
+        DiT + text-encoder weights into this fresh trainer. Optimizer,
+        sampler, loss history and RNG stay fresh — this begins a new run,
+        it does not resume one.
+
+        Step offset: an explicit ``start_step`` wins. Otherwise, if the
+        donor is a pooled checkpoint (it carries ``pool`` metadata from
+        scripts/average_checkpoints.py), training continues numbering
+        from the donor's stored step — pool rounds are numbered
+        cumulatively across rounds. A plain donor checkpoint starts at
+        step 0, exactly like a warm start.
+        """
+        payload = load_checkpoint(path)  # restores the donor's RNG state...
+        # ...which a fresh run must not keep (mirrors the VAE trainer:
+        # rank_seed(seed, 0) == seed, so single-process is unchanged).
+        seed_everything(rank_seed(self.seed, self.rank))
+        if payload.get("kind") != "dit" or "dit" not in payload \
+                or "text_enc" not in payload:
+            raise ValueError(
+                f"{path} is not a DiT checkpoint (kind={payload.get('kind')!r})")
+        # Strict loads into the UNWRAPPED modules (plain keys either way).
+        unwrap_model(self.dit).load_state_dict(payload["dit"])
+        self.text_enc.load_state_dict(payload["text_enc"])
+        self.init_from = path
+        if start_step is not None:
+            self.step = int(start_step)
+        elif "pool" in payload:
+            self.step = int(payload["step"])
+        else:
+            self.step = 0
+
     def save(self, path: str) -> None:
         # Only rank 0 writes checkpoints (all ranks hold identical
         # weights thanks to DDP gradient all-reduce; the checkpoint is
@@ -321,6 +367,24 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=6)
     ap.add_argument("--log", default=None)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--init-weights", default=None, metavar="PATH",
+                    help="weights-only init: initialize the DiT + text "
+                         "encoder from a donor DiT checkpoint and train as "
+                         "a fresh run (fresh optimizer/RNG). This is the "
+                         "pool worker's round start: if the donor is a "
+                         "pooled checkpoint, step numbering continues from "
+                         "its stored step. Mutually exclusive with --resume.")
+    ap.add_argument("--start-step", type=int, default=None,
+                    help="with --init-weights, override the starting step "
+                         "number (default: the pooled checkpoint's stored "
+                         "step, or 0 for a plain donor checkpoint)")
+    ap.add_argument("--data-shard", default=None, metavar="K/N",
+                    type=parse_data_shard,
+                    help="pool worker data shard, e.g. 2/4: train only on "
+                         "this worker's disjoint slice of the dataset "
+                         "(entries ordered deterministically, worker K "
+                         "takes positions %% N == K-1). Default: the "
+                         "full dataset, as before.")
     ap.add_argument("--vae-ckpt", default=None,
                     help="trained VAE checkpoint (from train_vae.py) for latents")
     ap.add_argument("--data-dir", default=None,
@@ -340,6 +404,12 @@ def main() -> None:
                          "so text-only generation stays strong")
     args = ap.parse_args()
 
+    if args.resume and args.init_weights:
+        ap.error("--resume and --init-weights are mutually exclusive: "
+                 "resume continues a run, weights-only init begins a "
+                 "fresh one (e.g. a pool round)")
+    if args.start_step is not None and not args.init_weights:
+        ap.error("--start-step only applies with --init-weights")
     # Under torchrun this initializes the process group (nccl on CUDA,
     # gloo on CPU); without torchrun it is a no-op single-process info.
     dist_info = init_distributed(args.device)
@@ -351,21 +421,41 @@ def main() -> None:
                 batch_size=args.batch_size, num_clips=args.num_clips,
                 device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
                 vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
+                data_shard=args.data_shard,
                 dist_info=dist_info)
             if args.grad_checkpoint:
                 unwrap_model(tr.dit).set_grad_checkpoint(True)
             if main_rank:
                 print(f"resumed from {args.resume} at step {tr.step}")
         else:
+            use_depth = args.depth
+            if args.init_weights and not use_depth:
+                # Like resume, a depth-trained donor needs its depth stem
+                # built BEFORE its weights load; the donor's stored
+                # config is the source of truth.
+                donor = torch.load(args.init_weights, map_location="cpu",
+                                   weights_only=False)
+                if bool((donor.get("config") or {}).get("use_depth", False)):
+                    use_depth = True
+                    if main_rank:
+                        print("note: donor checkpoint was trained with "
+                              "depth conditioning; enabling --depth")
             tr = DiTTrainer(preset=args.preset, seed=args.seed, lr=args.lr,
                             batch_size=args.batch_size, num_clips=args.num_clips,
                             device=args.device, ckpt_dir=args.ckpt_dir,
                             log_path=args.log, vae_ckpt=args.vae_ckpt,
                             data_dir=args.data_dir,
                             grad_checkpoint=args.grad_checkpoint,
-                            use_depth=args.depth,
+                            use_depth=use_depth,
                             depth_dropout=args.depth_dropout,
+                            data_shard=args.data_shard,
                             dist_info=dist_info)
+            if args.init_weights:
+                tr.load_dit_weights(args.init_weights,
+                                    start_step=args.start_step)
+                if main_rank:
+                    print(f"initialized DiT weights from "
+                          f"{args.init_weights} (starting step {tr.step})")
         n_params = sum(p.numel() for p in tr.dit.parameters()) / 1e6
         if main_rank:
             print(f"preset={args.preset} dit_params={n_params:.1f}M "
@@ -392,8 +482,13 @@ def main() -> None:
         tr.close()
         if main_rank:
             hist = tr.loss_history
-            print(f"done: steps={tr.step} loss_first={hist[0]:.4f} "
-                  f"loss_last={hist[-1]:.4f}")
+            if hist:
+                print(f"done: steps={tr.step} loss_first={hist[0]:.4f} "
+                      f"loss_last={hist[-1]:.4f}")
+            else:
+                # --steps 0 (e.g. minting a pool round-start checkpoint):
+                # the final latest.pt above is the whole point; no losses.
+                print(f"done: steps={tr.step} (no steps run)")
     finally:
         destroy_distributed()
 

@@ -13,6 +13,10 @@ The trained VAE's encoder then supplies latents for DiT training
 Multi-GPU (DDP, opt-in via torchrun; --batch-size is PER GPU there):
   torchrun --standalone --nproc_per_node=2 -m vidgen.train_vae \\
       --preset small --batch-size 2 --device cuda ...
+
+Weight-averaging pool worker (one round; see PYTHON_IMPLEMENTATION.md):
+  python -m vidgen.train_vae --preset small --init-weights pooled.pt \\
+      --data-shard 2/4 --steps 500 --ckpt-dir ckpts/worker2 ...
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from vidgen.distributed import (
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.logging import StructuredLogger
+from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.vae.model import CausalVAE, vae_loss
 
@@ -49,6 +54,7 @@ class VAETrainer:
                  kl_weight: float = 1e-4, batch_size: int = 2, num_clips: int = 64,
                  device: str = "cpu", ckpt_dir: str | None = None,
                  log_path: str | None = None, data_dir: str | None = None,
+                 data_shard: tuple[int, int] | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -71,16 +77,20 @@ class VAETrainer:
 
         self.vae = CausalVAE().to(self.device)
         self.opt = torch.optim.AdamW(self.vae.parameters(), lr=lr)
+        # Optional pool worker shard (vidgen/pool.py): this worker trains
+        # only on its disjoint slice of the dataset. None = full dataset,
+        # the original behavior exactly.
+        self.data_shard = data_shard
         if data_dir:
             self.dataset = FolderClipDataset(
                 data_dir, height=self.cfg.height, width=self.cfg.width,
-                frames=self.cfg.frames)
+                frames=self.cfg.frames, shard=data_shard)
             num_items = len(self.dataset)
         else:
             self.dataset = MovingMNISTDataset(
                 num_clips, height=self.cfg.height, width=self.cfg.width,
-                frames=self.cfg.frames, base_seed=seed + 1)
-            num_items = num_clips
+                frames=self.cfg.frames, base_seed=seed + 1, shard=data_shard)
+            num_items = len(self.dataset)
         # Distributed data sharding: ONE sampler, identically seeded on
         # every rank, draws global batches of batch_size * world_size;
         # each rank trains on its own disjoint slice (_next_batch_idx).
@@ -151,7 +161,8 @@ class VAETrainer:
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
 
-    def load_vae_weights(self, path: str) -> None:
+    def load_vae_weights(self, path: str,
+                         start_step: int | None = None) -> None:
         """Weights-only warm start from a donor VAE checkpoint.
 
         Copies just the trained VAE weights (e.g. Round-1 tiny VAE) into this
@@ -159,6 +170,11 @@ class VAETrainer:
         fresh — this is a new run, not a resume. The VAE architecture is
         preset-independent, so a tiny checkpoint can initialize the Small VAE;
         any shape mismatch raises immediately (strict load).
+
+        Step offset (pool rounds): an explicit ``start_step`` wins;
+        otherwise a pooled checkpoint (carries ``pool`` metadata) donates
+        its stored step so round numbering is cumulative; a plain donor
+        starts at step 0, as a warm start always has.
         """
         payload = load_checkpoint(path)  # restores the donor's RNG state...
         # ...which a fresh run must not keep. Single-process this is the
@@ -169,6 +185,10 @@ class VAETrainer:
                 f"{path} is not a VAE checkpoint (kind={payload.get('kind')!r})")
         unwrap_model(self.vae).load_state_dict(payload["vae"])  # strict load
         self.init_from = path
+        if start_step is not None:
+            self.step = int(start_step)
+        elif "pool" in payload:
+            self.step = int(payload["step"])
 
     def save(self, path: str) -> None:
         # Only rank 0 writes checkpoints (weights are identical across
@@ -219,7 +239,20 @@ def main() -> None:
                     help="weights-only warm start: initialize the VAE from a donor "
                          "VAE checkpoint (e.g. the Round-1 tiny VAE) and train as a "
                          "fresh run. The VAE architecture is preset-independent, so "
-                         "this works across presets. Mutually exclusive with --resume.")
+                         "this works across presets. For a pool round, pass the "
+                         "pooled checkpoint: step numbering then continues from "
+                         "its stored step. Mutually exclusive with --resume.")
+    ap.add_argument("--start-step", type=int, default=None,
+                    help="with --init-weights, override the starting step "
+                         "number (default: the pooled checkpoint's stored "
+                         "step, or 0 for a plain donor checkpoint)")
+    ap.add_argument("--data-shard", default=None, metavar="K/N",
+                    type=parse_data_shard,
+                    help="pool worker data shard, e.g. 2/4: train only on "
+                         "this worker's disjoint slice of the dataset "
+                         "(entries ordered deterministically, worker K "
+                         "takes positions %% N == K-1). Default: the "
+                         "full dataset, as before.")
     ap.add_argument("--data-dir", default=None,
                     help="prepared real-clip dataset dir (manifest.jsonl + .npy clips); "
                          "when set, it replaces Moving MNIST")
@@ -228,6 +261,8 @@ def main() -> None:
     if args.resume and args.init_weights:
         ap.error("--resume and --init-weights are mutually exclusive: "
                  "resume continues a run, warm start begins a fresh one")
+    if args.start_step is not None and not args.init_weights:
+        ap.error("--start-step only applies with --init-weights")
     # Under torchrun this initializes the process group (nccl on CUDA,
     # gloo on CPU); without torchrun it is a no-op single-process info.
     dist_info = init_distributed(args.device)
@@ -239,7 +274,8 @@ def main() -> None:
                 kl_weight=args.kl_weight, batch_size=args.batch_size,
                 num_clips=args.num_clips, device=args.device,
                 ckpt_dir=args.ckpt_dir, log_path=args.log,
-                data_dir=args.data_dir, dist_info=dist_info)
+                data_dir=args.data_dir, data_shard=args.data_shard,
+                dist_info=dist_info)
             if main_rank:
                 print(f"resumed from {args.resume} at step {tr.step}")
         else:
@@ -248,11 +284,14 @@ def main() -> None:
                             batch_size=args.batch_size,
                             num_clips=args.num_clips, device=args.device,
                             ckpt_dir=args.ckpt_dir, log_path=args.log,
-                            data_dir=args.data_dir, dist_info=dist_info)
+                            data_dir=args.data_dir, data_shard=args.data_shard,
+                            dist_info=dist_info)
             if args.init_weights:
-                tr.load_vae_weights(args.init_weights)
+                tr.load_vae_weights(args.init_weights,
+                                    start_step=args.start_step)
                 if main_rank:
-                    print(f"warm-started VAE weights from {args.init_weights}")
+                    print(f"warm-started VAE weights from "
+                          f"{args.init_weights} (starting step {tr.step})")
         n_params = sum(p.numel() for p in tr.vae.parameters()) / 1e6
         if main_rank:
             print(f"preset={args.preset} vae_params={n_params:.2f}M "
@@ -276,8 +315,12 @@ def main() -> None:
         tr.close()
         if main_rank:
             hist = tr.loss_history
-            print(f"done: steps={tr.step} loss_first={hist[0]:.4f} "
-                  f"loss_last={hist[-1]:.4f}")
+            if hist:
+                print(f"done: steps={tr.step} loss_first={hist[0]:.4f} "
+                      f"loss_last={hist[-1]:.4f}")
+            else:
+                # --steps 0 (e.g. minting a pool round-start checkpoint).
+                print(f"done: steps={tr.step} (no steps run)")
     finally:
         destroy_distributed()
 

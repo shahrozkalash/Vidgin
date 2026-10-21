@@ -83,6 +83,7 @@ class FolderClipDataset(Dataset):
         height: int = 64,
         width: int = 64,
         max_clips: int | None = None,
+        shard: tuple[int, int] | None = None,
     ):
         self.data_dir = data_dir
         self.frames = frames
@@ -91,11 +92,28 @@ class FolderClipDataset(Dataset):
         entries = _load_manifest(data_dir)
         if max_clips is not None:
             entries = entries[: max(0, int(max_clips))]
+        if shard is not None:
+            # Weight-averaging pool worker shard (vidgen/pool.py): entries
+            # are first put in deterministic FILE-NAME order (independent
+            # of manifest line order, so every platform sees the same
+            # numbering), then worker K of N keeps positions % N == K-1.
+            # Shards are disjoint; their union is the full dataset.
+            from vidgen.pool import parse_data_shard, shard_positions
+
+            k, n = parse_data_shard(shard)
+            entries = sorted(entries, key=lambda r: r["file"])
+            entries = [entries[i] for i in shard_positions(len(entries), (k, n))]
+            if not entries:
+                raise ValueError(
+                    f"{data_dir}: data shard {k}/{n} selects no clips "
+                    f"(dataset too small for {n} shards)"
+                )
         if not entries:
             raise ValueError(
                 f"{data_dir}: manifest yielded no clips (max_clips={max_clips})"
             )
         self.entries = entries
+        self.shard = shard
 
     def __len__(self) -> int:
         return len(self.entries)

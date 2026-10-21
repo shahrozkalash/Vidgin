@@ -29,6 +29,10 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → Small VAE; VAE arch is preset-independent); DDP multi-GPU under `torchrun` |
 | `vidgen/distributed.py` | Part 7 | DDP helpers: torchrun env init (nccl on CUDA / gloo on CPU, no-op single-process fallback), per-rank device selection, barrier/destroy, `unwrap_model` / `plain_state_dict` (checkpoints never carry `module.` prefixes), per-rank seed derivation, global-batch sharding, explicit gradient sync for the unwrapped text encoder |
 | `tests/test_distributed.py` | Part 7 | Helper unit tests (fallback, env parsing, seed/shard math, plain state dicts), proof single-process trainers are unwrapped/unsharded, and simulated 2-rank tests: disjoint clip slices, divergent-but-deterministic RNG streams, rank-1 writes no checkpoint |
+| `vidgen/pool.py` | Part 7 | Weight-averaging pool (DiLoCo-style) primitives: `--data-shard K/N` parsing + position math, checkpoint merge (float-only averaging in float64, optional outer step against the round-start base), strict compatibility verification (kind/preset/config/step/keys/shapes), RNG-side-effect-free payload loading |
+| `scripts/average_checkpoints.py` | Part 7 | Coordinator merge tool: 2+ same-round worker checkpoints → one pooled weights-only checkpoint (no optimizer/sampler/RNG state; `pool` metadata records inputs/base/outer-lr) |
+| `scripts/pool_status.py` | Part 7 | Coordinator inbox report: per-file kind/preset/step + merge-ready groups (same kind, preset, step) with the exact merge command |
+| `tests/test_pool.py` | Part 7 | Pool coverage: shard parsing/positions, folder + Moving MNIST shard partitioning (disjoint, union = full, sorted-by-file order), exact merge math incl. outer step and buffer handling, every mismatch rejection, real tiny-preset pool rounds for both trainers (divergence, merged `--init-weights` load, cumulative step numbering), pool_status grouping |
 | `vidgen/data/clips.py` | Part 1 | `FolderClipDataset`: reads a prepared directory (`manifest.jsonl` + uint8 `(T,H,W,3)` `.npy` clips); yields the exact Moving MNIST sample format; deterministic manifest-order indexing; `max_clips` cap |
 | `vidgen/sample.py` | Part 8 | Sample a clip from a DiT checkpoint → VAE decode → `.npy` (+ PNG/GIF if Pillow installed) |
 | `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pixabay API via `PIXABAY_API_KEY` env var — recommended, free key issued instantly; Pexels API via `PEXELS_API_KEY` — only if you already have a key, since Pexels has paused issuing new ones; or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
@@ -274,6 +278,127 @@ afterwards; DiT with `--grad-checkpoint`: 2 steps, exit clean; DiT
 `--resume` under torchrun: resumed at step 3, ran to step 5; VAE:
 3 steps, loss 0.9989 → 0.9960, checkpoint strict-loads into a plain
 `CausalVAE`. Unit coverage in `tests/test_distributed.py`.
+
+## Weight-averaging pool (multi-platform) — 2026-10-21
+
+DDP (above) pools GPUs *inside one machine*. The pool pools **machines
+that cannot talk to each other** — a Colab account, a Kaggle account and
+a Lightning AI Studio — in the style of Google's DiLoCo: workers train
+independently and sync rarely, by exchanging one checkpoint file per
+round, so slow links and short free-tier sessions stop mattering.
+Implemented in `vidgen/pool.py` + `scripts/average_checkpoints.py` +
+`scripts/pool_status.py`; both trainers are pool-ready.
+
+**The round loop:**
+
+```
+                 pooled checkpoint (round start, step S)
+                    |            |            |
+              worker 1       worker 2     worker N        <- Colab / Kaggle /
+              --init-weights (same file for everyone)        Lightning / ...
+              --data-shard 1/N  2/N          N/N   (disjoint data slices)
+              --steps R         R            R     (same R for everyone)
+                    |            |            |
+              worker ckpts, all at step S + R
+                    \            |           /
+        coordinator: scripts/average_checkpoints.py
+          out = base + outer_lr * (mean(workers) - base),  base = round start
+                    |
+              pooled checkpoint (step S + R)  ->  next round
+```
+
+**Coordinator (Spark's machine):**
+
+```bash
+# what has arrived, and which rounds are complete:
+python scripts/pool_status.py ~/pool_inbox/
+# merge a finished round (drop --base/--outer-lr for a plain mean):
+python scripts/average_checkpoints.py \
+    inbox/worker1.pt inbox/worker2.pt inbox/worker3.pt \
+    --base pooled_round3.pt --outer-lr 1.0 --out pooled_round4.pt
+# then publish pooled_round4.pt where every worker can fetch it
+# (GitHub Release / Drive) — it is the next round's --init-weights.
+```
+
+**Worker round — DiT** (run the VAE round first, exactly like the
+single-machine flow; `--vae-ckpt` as usual). Colab, Kaggle and Lightning
+run the *identical* commands — only the shard number and the file
+transport differ:
+
+```bash
+python -m vidgen.train --preset small --depth --grad-checkpoint \
+    --device cuda --batch-size 2 \
+    --init-weights pooled_round4.pt \
+    --data-shard 2/3 --steps 500 \
+    --data-dir <this platform's copy of the dataset> \
+    --vae-ckpt <trained Small VAE checkpoint> \
+    --ckpt-dir ckpts/worker2 --ckpt-every 500
+# -> send ckpts/worker2/latest.pt (step = round start + 500) to the coordinator
+```
+
+**Worker round — VAE:**
+
+```bash
+python -m vidgen.train_vae --preset small --device cuda --batch-size 2 \
+    --init-weights pooled_vae_round4.pt \
+    --data-shard 2/3 --steps 500 \
+    --data-dir <dataset> --ckpt-dir ckpts/vae_worker2 --ckpt-every 500
+```
+
+Inside one platform session a worker may itself span that machine's
+GPUs with DDP — e.g. on Kaggle's 2× T4, prefix the worker command with
+`torchrun --standalone --nproc_per_node=2` (per-GPU `--batch-size`
+rules from the Multi-GPU section apply unchanged). Pool and DDP
+compose: DDP syncs every step inside the machine; the pool syncs once
+per round across machines.
+
+**Rules that make it work:**
+
+- *Same start, same steps.* Every worker in a round starts from the
+  identical pooled checkpoint and trains the identical `--steps`. The
+  merge tool hard-errors on any kind/preset/config/step mismatch, so a
+  bad round fails loudly instead of averaging garbage.
+- *Disjoint data.* `--data-shard K/N`: dataset entries are ordered
+  deterministically (folder datasets: sorted by file name; Moving MNIST:
+  clip index), worker K takes positions `% N == K-1`. Shards are
+  disjoint and their union is the full dataset.
+- *Fresh inner optimizer every round.* A pooled checkpoint is
+  weights-only — no optimizer, sampler, or RNG state — because Adam
+  moments are private to one worker's trajectory on its own data slice
+  and cannot be meaningfully averaged. `--init-weights` therefore
+  starts each worker with a fresh optimizer; cross-round momentum
+  lives in the merge's outer step instead. Step numbering is
+  cumulative: `--init-weights` on a pooled checkpoint continues from
+  its stored step (override with `--start-step`).
+- *One round of drift, max.* Workers only stay averageable because
+  they re-sync every round; letting a worker run many rounds alone
+  before merging would let its weights drift into a different basin
+  and the average would degrade. Keep R modest (hundreds of steps) —
+  that is the whole design point.
+- *A missing worker just misses the round.* Nothing is in lockstep:
+  if a session dies, merge whoever arrived (2+ checkpoints), or wait.
+
+**Honest limits.** Sync happens per round, not per step, so pooled
+training is not bit-equivalent to one big DDP run and nobody should
+expect it to match DDP's exact trajectory; DiLoCo's published results
+say final quality is close at these sync intervals, but Vidgin's own
+evidence so far is the proof run below, not a quality benchmark. The
+merged model must still fit on ONE worker's GPU (the pool divides
+*data and time*, not model memory — that remains FSDP territory).
+
+**Verification (this VM, 2 CPU cores, no GPU, 2026-10-21):** scripted
+proof round on Moving MNIST, tiny preset — one init checkpoint (step
+0); worker A `--data-shard 1/2` and worker B `--data-shard 2/2`, 24
+steps each from the same init: losses 1.3046 → 0.7277 (A) and
+1.3101 → 0.7239 (B); the workers' final weights verifiably differ;
+the merged checkpoint equals the float64 mean cast back to float32
+exactly (max deviation 7.5e-09, pure float32 cast rounding), and a
+`--base` merge with `--outer-lr 1.0` reproduces the plain mean
+bit-for-bit; a continuation run from the merged checkpoint resumed
+numbering at step 24 and trained 12 more steps, loss 0.7803 → 0.4962,
+all finite. Merge math, every mismatch rejection, shard partitioning
+and both trainers' round plumbing are unit-covered in
+`tests/test_pool.py` (13 tests).
 
 ## What remains GPU/cluster-only (from GPU_CHECKLIST.md)
 
