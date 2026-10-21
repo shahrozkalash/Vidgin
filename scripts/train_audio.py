@@ -487,6 +487,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--data-manifest", default=None, help="Path to jsonl manifest.")
     parser.add_argument("--ckpt-dir", default=None, help="Directory to save checkpoints.")
+    parser.add_argument(
+        "--ckpt-every",
+        type=int,
+        default=200,
+        help="Also save latest.pt every N steps during training (0 = only at the end).",
+    )
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume bit-for-bit.")
     parser.add_argument("--log", default=None, help="Path to JSONL log file.")
     parser.add_argument(
@@ -568,8 +574,14 @@ def main() -> None:
         print(f"Resumed at step {trainer.step}")
 
     start_time = time.time()
+    latest_path = os.path.join(ckpt_dir, "latest.pt")
     for step in range(trainer.step, trainer.step + args.steps):
         rec = trainer.train_step()
+        if args.ckpt_every > 0 and (step + 1) % args.ckpt_every == 0:
+            # Periodic save: a crashed/interrupted run loses at most
+            # --ckpt-every steps instead of everything (checkpoints used
+            # to be written only after the final step).
+            trainer.save(latest_path)
         if (step + 1) % max(1, args.steps // 10) == 0 or (step + 1) == trainer.step + args.steps:
             elapsed = time.time() - start_time
             print(
@@ -577,7 +589,6 @@ def main() -> None:
                 f"Elapsed: {elapsed:.1f}s"
             )
 
-    latest_path = os.path.join(ckpt_dir, "latest.pt")
     trainer.save(latest_path)
     print(f"\n[train_audio] Saved checkpoint: {latest_path}")
     print(f"[train_audio] Training complete!\n")
