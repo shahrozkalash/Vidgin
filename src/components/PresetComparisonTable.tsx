@@ -74,10 +74,10 @@ export const PresetComparisonTable: React.FC<PresetComparisonTableProps> = ({
       targetHardware: 'A100 (80GB) or H100 GPU',
     },
     vidgen14b: {
-      recommendedFor: 'Cinematic flagship photorealism',
+      recommendedFor: 'Big Brain 14 billion parameter cinematic photorealism',
       vram: '~48 GB',
       speed: '~7.5s/step',
-      tierLabel: 'Cinematic Flagship',
+      tierLabel: 'Big Brain Flagship (14.3B)',
       targetHardware: 'A100 (80GB) or H100 Cluster',
     },
   };

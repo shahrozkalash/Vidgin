@@ -197,8 +197,8 @@ print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags.
                   <option value="tiny">Tiny (~20M, CPU instant)</option>
                   <option value="small">Small (~270M, fast)</option>
                   <option value="vidgen480p">Vidgen 480p (~1.3B, Production)</option>
-                  <option value="vidgen9b">Vidgen 9B (🧠 Big Brain ~9.2B, High-Capacity)</option>
-                  <option value="vidgen14b">Vidgen 14B (~14B, Cinematic)</option>
+                  <option value="vidgen9b">Vidgen 9B (~9.2B, High-Capacity)</option>
+                  <option value="vidgen14b">Vidgen 14B (🧠 Big Brain Flagship ~14.3B, Photorealistic)</option>
                 </select>
               </div>
 

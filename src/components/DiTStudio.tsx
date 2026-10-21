@@ -41,11 +41,11 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
 
   const [activeSubTab, setActiveSubTab] = useState<'block_architecture' | 'parameter_verifier' | 'big_brain_scaler' | 'timestep_adaln' | 'overfit_simulator' | 'ablation_comparison'>('big_brain_scaler');
 
-  // Big Brain Scaler Custom Architecture State
+  // Big Brain Scaler Custom Architecture State - Defaulted to 14 Billion Flagship
   const [customLayers, setCustomLayers] = useState<number>(40);
-  const [customDim, setCustomDim] = useState<number>(4096);
-  const [customHeads, setCustomHeads] = useState<number>(32);
-  const [customFfn, setCustomFfn] = useState<number>(11264);
+  const [customDim, setCustomDim] = useState<number>(5120);
+  const [customHeads, setCustomHeads] = useState<number>(40);
+  const [customFfn, setCustomFfn] = useState<number>(13824);
 
   const customDitConfig = useMemo(() => ({
     numLayers: customLayers,
@@ -60,10 +60,10 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
   }), [customLayers, customDim, customHeads, customFfn]);
 
   const customBreakdown = useMemo(() => {
-    return calculateDiTParameters(customDitConfig, 'vidgen9b');
+    return calculateDiTParameters(customDitConfig, 'vidgen14b');
   }, [customDitConfig]);
 
-  const isBigBrainThresholdMet = customBreakdown.totalParams >= 9_000_000_000;
+  const isBigBrainThresholdMet = customBreakdown.totalParams >= 14_000_000_000;
 
   // Timestep & adaLN Interactive State
   const [timestep, setTimestep] = useState<number>(0.35);
@@ -139,7 +139,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
         {/* Sub-Tabs */}
         <div className="flex gap-2 mt-4 pt-4 border-t border-slate-800/80 overflow-x-auto no-scrollbar">
           {[
-            { id: 'big_brain_scaler', label: '🧠 Big Brain Scaler (≥9B Params)', icon: Brain },
+            { id: 'big_brain_scaler', label: '🧠 Big Brain Scaler (≥14B Params)', icon: Brain },
             { id: 'block_architecture', label: 'Vidgen DiT Block Flow', icon: Layers },
             { id: 'parameter_verifier', label: 'Preset Params & Savings', icon: BarChart3 },
             { id: 'timestep_adaln', label: 'Timestep & adaLN-Zero', icon: Sliders },
@@ -178,11 +178,11 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                     <Brain className="w-5 h-5" />
                   </span>
                   <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    Big Brain Parameter Scaler (≥ 9 Billion Parameters)
+                    Big Brain Parameter Scaler (≥ 14 Billion Parameters)
                   </h3>
                 </div>
                 <p className="text-xs text-slate-300 mt-1 max-w-2xl">
-                  Configure and scale the Vidgen Video DiT backbone to reach and exceed the <strong className="text-white">9 Billion Parameter</strong> threshold.
+                  Configure and scale the Vidgen Video DiT backbone to reach and exceed the <strong className="text-white">14 Billion Parameter</strong> flagship threshold.
                   Fine-tune depth, width, attention heads, and FFN expansion with real-time mathematical parameter verification.
                 </p>
               </div>
@@ -192,26 +192,38 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 <button
                   onClick={() => {
                     setCustomLayers(40);
-                    setCustomDim(4096);
-                    setCustomHeads(32);
-                    setCustomFfn(11264);
-                  }}
-                  className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-                >
-                  <Brain className="w-3.5 h-3.5" />
-                  <span>Preset: 9.2B Big Brain</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setCustomLayers(40);
                     setCustomDim(5120);
                     setCustomHeads(40);
                     setCustomFfn(13824);
                   }}
-                  className="px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                  className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500/30 to-cyan-500/30 hover:from-emerald-500/40 hover:to-cyan-500/40 text-emerald-200 border border-emerald-400/50 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-950/40"
+                >
+                  <Brain className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                  <span>Preset: 14.3B Big Brain Flagship</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomLayers(40);
+                    setCustomDim(4096);
+                    setCustomHeads(32);
+                    setCustomFfn(11264);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
                 >
                   <Zap className="w-3.5 h-3.5" />
-                  <span>Preset: 14.1B Flagship</span>
+                  <span>Preset: 9.2B High-Capacity</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomLayers(48);
+                    setCustomDim(5632);
+                    setCustomHeads(44);
+                    setCustomFfn(15360);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Preset: 18.5B Ultra Giant</span>
                 </button>
               </div>
             </div>
@@ -231,10 +243,10 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                         : 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
                     }`}>
                       <Brain className="w-4 h-4 animate-pulse" />
-                      {isBigBrainThresholdMet ? '✓ Big Brain Threshold Satisfied (≥ 9 Billion)' : 'Below 9 Billion Threshold'}
+                      {isBigBrainThresholdMet ? '✓ Big Brain Threshold Satisfied (≥ 14 Billion)' : 'Below 14 Billion Threshold'}
                     </span>
                     <span className="text-xs text-slate-400 font-mono">
-                      Target: ≥ 9,000,000,000
+                      Target: ≥ 14,000,000,000
                     </span>
                   </div>
 
@@ -249,17 +261,17 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
 
                   <p className="text-xs text-slate-300">
                     {isBigBrainThresholdMet
-                      ? `This architecture possesses high-capacity spatio-temporal reasoning, fluid narrative stability, and zero-shot prompt comprehension with ${((customBreakdown.totalParams - 9e9) / 1e9).toFixed(2)}B parameters above the 9B minimum requirement.`
-                      : 'Increase layers, hidden width, or FFN dimension using the controls below to cross 9.00 Billion parameters.'}
+                      ? `This flagship 14B architecture provides state-of-the-art cinematic spatio-temporal reasoning, fluid narrative stability, complex real-world physical simulations, and multi-actor persistence with ${((customBreakdown.totalParams - 14e9) / 1e9).toFixed(2)}B parameters above the 14B flagship requirement.`
+                      : 'Increase layers, hidden width, or FFN dimension using the controls below to cross 14.00 Billion parameters.'}
                   </p>
                 </div>
 
-                {/* Progress Meter towards 9B */}
+                {/* Progress Meter towards 14B */}
                 <div className="w-full lg:w-72 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-2">
                   <div className="flex justify-between text-xs font-mono">
-                    <span className="text-slate-400">9B Target Progress:</span>
+                    <span className="text-slate-400">14B Target Progress:</span>
                     <span className={`font-bold ${isBigBrainThresholdMet ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      {Math.min(200, Math.round((customBreakdown.totalParams / 9e9) * 100))}%
+                      {Math.min(200, Math.round((customBreakdown.totalParams / 14e9) * 100))}%
                     </span>
                   </div>
                   <div className="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-slate-800">
@@ -269,13 +281,14 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                           ? 'bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400'
                           : 'bg-gradient-to-r from-amber-500 to-orange-400'
                       }`}
-                      style={{ width: `${Math.min(100, (customBreakdown.totalParams / 9e9) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (customBreakdown.totalParams / 14e9) * 100)}%` }}
                     />
                   </div>
                   <div className="flex justify-between text-[10px] font-mono text-slate-500">
                     <span>0B</span>
-                    <span className="text-cyan-400 font-bold">9.0B Target</span>
-                    <span>14.0B+</span>
+                    <span className="text-slate-400">9B</span>
+                    <span className="text-cyan-400 font-bold">14.0B Target</span>
+                    <span>20.0B+</span>
                   </div>
                 </div>
               </div>
@@ -302,7 +315,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 />
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>16 Layers (Light)</span>
-                  <span className="text-slate-400">40 Layers (Standard 9B)</span>
+                  <span className="text-slate-400">40 Layers (14B Flagship)</span>
                   <span>56 Layers (Deep)</span>
                 </div>
               </div>
@@ -332,7 +345,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 />
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>2048 (Narrow)</span>
-                  <span className="text-slate-400">4096 (9B Base)</span>
+                  <span className="text-slate-400">5120 (14B Base)</span>
                   <span>6144 (Ultra-Wide)</span>
                 </div>
               </div>
@@ -356,7 +369,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 />
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>16 Heads</span>
-                  <span className="text-slate-400">32 Heads (9B)</span>
+                  <span className="text-slate-400">40 Heads (14B)</span>
                   <span>48 Heads</span>
                 </div>
               </div>
@@ -380,7 +393,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
                 />
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>6,144 (Standard)</span>
-                  <span className="text-slate-400">11,264 (9B Standard)</span>
+                  <span className="text-slate-400">13,824 (14B Standard)</span>
                   <span>18,432 (Massive)</span>
                 </div>
               </div>

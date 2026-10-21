@@ -123,10 +123,10 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
       description: 'Massive 9.2B parameter architecture for high-capacity visual intelligence, temporal stability, and zero-shot prompt comprehension.',
     },
     vidgen14b: {
-      recommendedFor: 'Cinematic flagship studio grade',
+      recommendedFor: 'Big Brain 14 billion parameter flagship studio grade',
       vram: '~48 GB (Multi-GPU)',
-      speed: 'Studio grade',
-      description: 'Large-scale 14B model for commercial photorealistic motion graphics.',
+      speed: 'Studio grade (~7.5s/step)',
+      description: 'Massive 14.3B parameter flagship model for commercial photorealistic video, intricate spatial physics, and rich cinematic lighting.',
     },
   };
 
