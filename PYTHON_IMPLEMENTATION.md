@@ -25,8 +25,10 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/flow.py` | Part 7 | Rectified flow `x_t = (1-t)x_0 + t x_1`, velocity target `x_1 - x_0`; shifted logit-normal timesteps (s=5.0); 10-bin diagnostic losses |
 | `vidgen/sampler.py` | Part 8 | Euler / Midpoint / RK4 ODE samplers with classifier-free guidance; oracle recovery < 1e-5 |
 | `vidgen/checkpoint.py` | Part 7 | Save/load with python+numpy+torch RNG states → resume reproduces next-step loss bit-for-bit |
-| `vidgen/train.py` | Part 7 | `DiTTrainer` + CLI: rectified-flow DiT training in VAE latent space on Moving MNIST; AdamW, grad-clip 1.0, 10% caption dropout, `--vae-ckpt` for a trained VAE; `--data-dir` trains on a prepared real-clip directory instead |
-| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → Small VAE; VAE arch is preset-independent) |
+| `vidgen/train.py` | Part 7 | `DiTTrainer` + CLI: rectified-flow DiT training in VAE latent space on Moving MNIST; AdamW, grad-clip 1.0, 10% caption dropout, `--vae-ckpt` for a trained VAE; `--data-dir` trains on a prepared real-clip directory instead; DDP multi-GPU under `torchrun` (see Multi-GPU section) |
+| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → Small VAE; VAE arch is preset-independent); DDP multi-GPU under `torchrun` |
+| `vidgen/distributed.py` | Part 7 | DDP helpers: torchrun env init (nccl on CUDA / gloo on CPU, no-op single-process fallback), per-rank device selection, barrier/destroy, `unwrap_model` / `plain_state_dict` (checkpoints never carry `module.` prefixes), per-rank seed derivation, global-batch sharding, explicit gradient sync for the unwrapped text encoder |
+| `tests/test_distributed.py` | Part 7 | Helper unit tests (fallback, env parsing, seed/shard math, plain state dicts), proof single-process trainers are unwrapped/unsharded, and simulated 2-rank tests: disjoint clip slices, divergent-but-deterministic RNG streams, rank-1 writes no checkpoint |
 | `vidgen/data/clips.py` | Part 1 | `FolderClipDataset`: reads a prepared directory (`manifest.jsonl` + uint8 `(T,H,W,3)` `.npy` clips); yields the exact Moving MNIST sample format; deterministic manifest-order indexing; `max_clips` cap |
 | `vidgen/sample.py` | Part 8 | Sample a clip from a DiT checkpoint → VAE decode → `.npy` (+ PNG/GIF if Pillow installed) |
 | `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pixabay API via `PIXABAY_API_KEY` env var — recommended, free key issued instantly; Pexels API via `PEXELS_API_KEY` — only if you already have a key, since Pexels has paused issuing new ones; or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
@@ -189,6 +191,90 @@ is done the model file carries everything it learned and the clips are only
 needed again if you train more — so keep the dataset on cheap storage
 (Drive / an external disk) as a reusable asset, not as a forever requirement.
 
+## Multi-GPU training (DDP) — 2026-10-21
+
+Both trainers (`vidgen/train.py`, `vidgen/train_vae.py`) support
+**DistributedDataParallel** via `vidgen/distributed.py`. Motivation: Kaggle
+gives 2× Tesla T4 free, and a single-GPU trainer wastes the second card.
+
+**Opt-in, or nothing changes.** Multi-GPU activates only when the process
+is launched with `torchrun` (which sets `RANK`/`WORLD_SIZE`/`LOCAL_RANK`).
+Without torchrun every helper is a no-op: no process group, no wrapping,
+no reseeding, no sampler change — training is byte-identical to before,
+and all existing checkpoints load exactly as before (and vice versa:
+DDP-trained checkpoints load into plain single-GPU models, verified).
+
+**Batch-size semantics — read this.** `--batch-size` is **PER GPU** in
+distributed mode: global batch = `--batch-size` × world size. Raising the
+GPU count without touching `--batch-size` therefore *does* raise the
+global batch (and changes the training dynamics, like raising
+`--batch-size` would). To keep the same global batch on more GPUs, lower
+`--batch-size` proportionally.
+
+Kaggle 2× T4, Small preset (global batch 4 = 2 per GPU):
+
+```bash
+# VAE first (warm-started from the Round-1 VAE), then the DiT
+torchrun --standalone --nproc_per_node=2 -m vidgen.train_vae \
+    --preset small --device cuda --steps 4000 --batch-size 2 \
+    --init-weights checkpoints/round1-vae.pt \
+    --data-dir /kaggle/working/s2_dataset \
+    --ckpt-dir /kaggle/working/ckpts/vae --ckpt-every 500
+
+torchrun --standalone --nproc_per_node=2 -m vidgen.train \
+    --preset small --depth --grad-checkpoint --device cuda \
+    --steps 15000 --batch-size 2 \
+    --data-dir /kaggle/working/s2_dataset \
+    --vae-ckpt /kaggle/working/ckpts/vae/latest.pt \
+    --ckpt-dir /kaggle/working/ckpts/dit --ckpt-every 500
+```
+
+**How ranks stay consistent, and where they diverge:**
+
+- *Weights*: every rank builds the model from the same base seed, the
+  optimizer is built on the raw modules, the DiT (and the VAE, in
+  `train_vae`) is then wrapped in DDP; DDP all-reduces gradients each
+  step, so all copies stay identical. Activation checkpointing
+  (`--grad-checkpoint`) is applied to the raw DiT before wrapping and
+  uses the non-reentrant implementation — verified working under DDP.
+- *Text encoder*: deliberately NOT DDP-wrapped — DDP only permits
+  `forward()` through the wrapper, but the trainer also calls
+  `null_embedding()`. It stays replicated and its gradients are
+  all-reduced + averaged explicitly after `backward()`
+  (`distributed.sync_gradients`), which is the same averaged gradient
+  DDP would have produced.
+- *Data*: ONE `BucketSampler`, identically seeded on all ranks, draws
+  global batches of `batch_size × world_size`; each rank keeps its own
+  disjoint contiguous slice. The sampler state is therefore identical
+  across ranks and rank 0's checkpoint carries the complete state.
+- *Noise*: after identical weight init, each rank re-seeds its RNG
+  stream to `seed + rank × 1_000_003`, so flow noise, timestep draws,
+  caption/depth dropout and VAE reparameterization noise differ per
+  rank. On a distributed `--resume`, the checkpoint's saved RNG (rank
+  0's) is loaded first and then each rank re-derives its own stream
+  from `(seed, rank)`: resuming with the same world size and `--seed`
+  is deterministic. A *single-GPU* resume of a DDP checkpoint uses the
+  saved RNG bit-for-bit, exactly as before. Note the one asymmetry:
+  distributed runs are reproducible for a fixed world size; changing
+  the world size mid-run changes slices/streams (true of DDP generally).
+- *Checkpoints & logs*: only rank 0 prints, logs, and writes; all ranks
+  barrier around each save. Checkpoints are written from the unwrapped
+  modules, so keys never have a `module.` prefix.
+
+**Honest scope limit:** DDP is data-parallel only — every rank holds the
+full model, so DDP speeds up Small/480p training but does **not** make
+the 9B/14B presets fit on small GPUs; that needs FSDP/ZeRO model
+sharding, which is future work and is not implemented here.
+
+**Verification (this VM, 2 CPU cores, no GPU, 2026-10-21):** real
+2-process `torchrun` smokes on the Tiny preset, gloo backend, batch 1
+per rank — DiT: 3 steps, loss 1.3106 → 1.1999, exactly one checkpoint
+set written (by rank 0), strict-loaded into a plain DiT + text encoder
+afterwards; DiT with `--grad-checkpoint`: 2 steps, exit clean; DiT
+`--resume` under torchrun: resumed at step 3, ran to step 5; VAE:
+3 steps, loss 0.9989 → 0.9960, checkpoint strict-loads into a plain
+`CausalVAE`. Unit coverage in `tests/test_distributed.py`.
+
 ## What remains GPU/cluster-only (from GPU_CHECKLIST.md)
 
 These are documentation-only — they need hardware nobody here has:
@@ -197,8 +283,9 @@ These are documentation-only — they need hardware nobody here has:
 - **3D VAE pretraining on 10M clips** — 8× H100 (80 GB), bf16.
 - **Frozen umT5-XXL (4.7B) embedding extraction** — ≥ 24 GB VRAM.
 - **Vidgen 1.3B DiT training** — 4 nodes × 8 H100, FSDP2 + Ulysses sequence
-  parallel (the config dimensions exist in `get_preset("vidgen480p")`; the
-  distributed launcher does not).
+  parallel (the config dimensions exist in `get_preset("vidgen480p")`; DDP
+  data-parallel now exists (see Multi-GPU section), the FSDP2 + Ulysses
+  machinery does not).
 - **Vidgen 14B / 500k-step run** — 8 nodes × 8 H100 (`get_preset("vidgen14b")`
   is dimension definitions only).
 - **64× H100 MFU/throughput benchmark** — 64 physical H100s.

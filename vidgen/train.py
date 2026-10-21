@@ -10,6 +10,10 @@ reproduces the next step bit-for-bit.
 Usage (CPU smoke):
   python -m vidgen.train --preset tiny --steps 12 --batch-size 2 --num-clips 16 \\
       --ckpt-dir checkpoints/tiny --log checkpoints/tiny/train.jsonl
+
+Multi-GPU (DDP, opt-in via torchrun; --batch-size is PER GPU there):
+  torchrun --standalone --nproc_per_node=2 -m vidgen.train --preset small \\
+      --depth --grad-checkpoint --batch-size 2 --device cuda ...
 """
 
 from __future__ import annotations
@@ -23,6 +27,19 @@ import torch.nn.functional as F
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
 from vidgen.config import get_preset, resolve_device
 from vidgen.depth import depth_to_latent_grid
+from vidgen.distributed import (
+    DistInfo,
+    barrier,
+    destroy_distributed,
+    init_distributed,
+    plain_state_dict,
+    rank_seed,
+    resolve_rank_device,
+    shard_batch,
+    sync_gradients,
+    unwrap_model,
+    wrap_ddp,
+)
 from vidgen.data.buckets import BucketSampler
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
@@ -41,7 +58,17 @@ class DiTTrainer:
                  log_path: str | None = None, cfg_dropout: float = 0.1,
                  vae_ckpt: str | None = None, data_dir: str | None = None,
                  grad_checkpoint: bool = False,
-                 use_depth: bool = False, depth_dropout: float = 0.1):
+                 use_depth: bool = False, depth_dropout: float = 0.1,
+                 dist_info: DistInfo | None = None):
+        # Distributed (torchrun) is opt-in: with no torchrun environment
+        # this is the single-process info and every path below is exactly
+        # the original single-GPU one.
+        if dist_info is None:
+            dist_info = init_distributed(device)
+        self.dist_info = dist_info
+        self.rank = dist_info.rank
+        self.world_size = dist_info.world_size
+        self.is_main_rank = dist_info.is_main
         seed_everything(seed)
         self.seed = seed
         self.cfg = get_preset(preset)
@@ -51,7 +78,7 @@ class DiTTrainer:
             # checkpoint's config; resume re-derives it from there.
             self.cfg.use_depth = True
         self.depth_dropout = depth_dropout
-        self.device = torch.device(resolve_device(device))
+        self.device = resolve_rank_device(resolve_device(device), dist_info)
         self.batch_size = batch_size
         self.cfg_dropout = cfg_dropout
         self.ckpt_dir = ckpt_dir
@@ -83,15 +110,56 @@ class DiTTrainer:
                 num_clips, height=self.cfg.height, width=self.cfg.width,
                 frames=self.cfg.frames, base_seed=seed + 1)
             num_items = num_clips
-        self.sampler = BucketSampler(num_items, batch_size, seed=seed + 2)
+        # Distributed data sharding: ONE sampler, identically seeded on
+        # every rank, draws global batches of batch_size * world_size;
+        # each rank trains on its own disjoint slice (see _next_batch_idx).
+        # The sampler state therefore stays identical across ranks and
+        # rank 0's checkpoint carries the complete, authoritative state.
+        # Single-process: world_size == 1, so this is the original sampler.
+        self.global_batch_size = batch_size * dist_info.world_size
+        self.sampler = BucketSampler(num_items, self.global_batch_size,
+                                     seed=seed + 2)
 
         self.step = 0
-        self.logger = StructuredLogger(log_path) if log_path else None
+        self.logger = (StructuredLogger(log_path)
+                       if log_path and self.is_main_rank else None)
         self.loss_history: list[float] = []
+
+        # DDP wrap LAST: the optimizer, checkpoint loading and warm paths
+        # all reference the raw modules' parameters (identical objects
+        # after wrapping). Activation checkpointing was set on the raw
+        # DiT above and uses the non-reentrant implementation, which is
+        # the DDP-compatible variant. The frozen VAE is never wrapped.
+        # The TEXT ENCODER is deliberately NOT wrapped: DDP only allows
+        # forward() through the wrapper, but train_step also calls
+        # text_enc.null_embedding(). It stays replicated and its
+        # gradients are all-reduced explicitly in train_step
+        # (vidgen.distributed.sync_gradients) — the same averaged
+        # gradient DDP would have produced.
+        self.dit = wrap_ddp(self.dit, dist_info, self.device)
+        if dist_info.is_distributed:
+            # Model weights were built identically on all ranks from the
+            # base seed above; NOW diverge the stochastic streams (flow
+            # noise, timesteps, caption/depth dropout) per rank, derived
+            # deterministically from (seed, rank) so a resume with the
+            # same world size reproduces the same streams.
+            seed_everything(rank_seed(seed, dist_info.rank))
+
+    # ------------------------------------------------------------ data
+    def _next_batch_idx(self) -> list[int]:
+        """This rank's batch indices for the next step.
+
+        Single-process: the sampler's batch, unchanged. Distributed: this
+        rank's disjoint slice of the shared global batch.
+        """
+        global_batch = self.sampler.next_batch()
+        if not self.dist_info.is_distributed:
+            return global_batch
+        return shard_batch(global_batch, self.batch_size, self.rank)
 
     # ------------------------------------------------------------ one step
     def train_step(self) -> dict:
-        batch_idx = self.sampler.next_batch()
+        batch_idx = self._next_batch_idx()
         clips, captions = [], []
         for i in batch_idx:
             c, cap = self.dataset[i]
@@ -122,6 +190,10 @@ class DiTTrainer:
 
         self.opt.zero_grad()
         loss.backward()
+        # The DiT's gradients were all-reduced by DDP during backward;
+        # the (unwrapped) text encoder's are synchronized explicitly so
+        # every rank clips and steps from identical gradients.
+        sync_gradients(self.text_enc, self.dist_info)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             list(self.dit.parameters()) + list(self.text_enc.parameters()), 1.0)
         self.opt.step()
@@ -177,8 +249,8 @@ class DiTTrainer:
             "kind": "dit",
             "preset": self.cfg.name,
             "step": self.step,
-            "dit": self.dit.state_dict(),
-            "text_enc": self.text_enc.state_dict(),
+            "dit": plain_state_dict(self.dit),
+            "text_enc": plain_state_dict(self.text_enc),
             "opt": self.opt.state_dict(),
             "sampler": self.sampler.state_dict(),
             "loss_history": self.loss_history,
@@ -187,14 +259,21 @@ class DiTTrainer:
 
     def load_state_dict(self, payload: dict) -> None:
         assert payload["kind"] == "dit"
-        self.dit.load_state_dict(payload["dit"])
-        self.text_enc.load_state_dict(payload["text_enc"])
+        # Loads go into the UNWRAPPED modules: checkpoint keys are plain
+        # (no "module." prefix) whether or not this rank runs under DDP.
+        unwrap_model(self.dit).load_state_dict(payload["dit"])
+        unwrap_model(self.text_enc).load_state_dict(payload["text_enc"])
         self.opt.load_state_dict(payload["opt"])
         self.sampler.load_state_dict(payload["sampler"])
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
 
     def save(self, path: str) -> None:
+        # Only rank 0 writes checkpoints (all ranks hold identical
+        # weights thanks to DDP gradient all-reduce; the checkpoint is
+        # built from the unwrapped models, so it stays plain).
+        if not self.is_main_rank:
+            return
         save_checkpoint(path, self.state_dict())
 
     @classmethod
@@ -211,6 +290,14 @@ class DiTTrainer:
         tr = cls(preset=payload["preset"], **kwargs)  # fresh init reseeds RNG...
         tr.load_state_dict(payload)
         set_rng_states(payload["rng"])  # ...so restore the saved RNG state last
+        if tr.dist_info.is_distributed:
+            # The saved RNG is rank 0's stream; restoring it verbatim on
+            # every rank would make all ranks draw identical noise. In
+            # distributed mode each rank instead re-derives its own
+            # stream from (seed, rank) — deterministic for a given
+            # checkpoint + world size + --seed. (Single-GPU resume of
+            # the same checkpoint still uses the saved RNG bit-for-bit.)
+            seed_everything(rank_seed(tr.seed, tr.rank))
         return tr
 
     def close(self):
@@ -222,7 +309,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset", default="tiny")
     ap.add_argument("--steps", type=int, default=12)
-    ap.add_argument("--batch-size", type=int, default=2)
+    ap.add_argument("--batch-size", type=int, default=2,
+                    help="clips per step PER GPU: under torchrun the global "
+                         "batch is batch-size x world_size (e.g. 2 x 2 T4s "
+                         "= global batch 4). Single-GPU runs are unaffected.")
     ap.add_argument("--num-clips", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=0)
@@ -250,37 +340,62 @@ def main() -> None:
                          "so text-only generation stays strong")
     args = ap.parse_args()
 
-    if args.resume:
-        tr = DiTTrainer.resume(
-            args.resume, seed=args.seed, lr=args.lr, batch_size=args.batch_size,
-            num_clips=args.num_clips, device=args.device,
-            ckpt_dir=args.ckpt_dir, log_path=args.log, vae_ckpt=args.vae_ckpt,
-            data_dir=args.data_dir)
-        if args.grad_checkpoint:
-            tr.dit.set_grad_checkpoint(True)
-        print(f"resumed from {args.resume} at step {tr.step}")
-    else:
-        tr = DiTTrainer(preset=args.preset, seed=args.seed, lr=args.lr,
-                        batch_size=args.batch_size, num_clips=args.num_clips,
-                        device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
-                        vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
-                        grad_checkpoint=args.grad_checkpoint,
-                        use_depth=args.depth, depth_dropout=args.depth_dropout)
-    n_params = sum(p.numel() for p in tr.dit.parameters()) / 1e6
-    print(f"preset={args.preset} dit_params={n_params:.1f}M "
-          f"tokens={tr.cfg.num_tokens} device={tr.device}")
+    # Under torchrun this initializes the process group (nccl on CUDA,
+    # gloo on CPU); without torchrun it is a no-op single-process info.
+    dist_info = init_distributed(args.device)
+    main_rank = dist_info.is_main
+    try:
+        if args.resume:
+            tr = DiTTrainer.resume(
+                args.resume, seed=args.seed, lr=args.lr,
+                batch_size=args.batch_size, num_clips=args.num_clips,
+                device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
+                vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
+                dist_info=dist_info)
+            if args.grad_checkpoint:
+                unwrap_model(tr.dit).set_grad_checkpoint(True)
+            if main_rank:
+                print(f"resumed from {args.resume} at step {tr.step}")
+        else:
+            tr = DiTTrainer(preset=args.preset, seed=args.seed, lr=args.lr,
+                            batch_size=args.batch_size, num_clips=args.num_clips,
+                            device=args.device, ckpt_dir=args.ckpt_dir,
+                            log_path=args.log, vae_ckpt=args.vae_ckpt,
+                            data_dir=args.data_dir,
+                            grad_checkpoint=args.grad_checkpoint,
+                            use_depth=args.depth,
+                            depth_dropout=args.depth_dropout,
+                            dist_info=dist_info)
+        n_params = sum(p.numel() for p in tr.dit.parameters()) / 1e6
+        if main_rank:
+            print(f"preset={args.preset} dit_params={n_params:.1f}M "
+                  f"tokens={tr.cfg.num_tokens} device={tr.device} "
+                  f"world_size={tr.world_size} "
+                  f"global_batch={tr.global_batch_size}")
 
-    for _ in range(args.steps):
-        rec = tr.train_step()
-        if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
-            path = os.path.join(tr.ckpt_dir, f"step_{tr.step:06d}.pt")
-            tr.save(path)
-            print(f"checkpoint -> {path}")
-    if tr.ckpt_dir:
-        tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
-    tr.close()
-    hist = tr.loss_history
-    print(f"done: steps={tr.step} loss_first={hist[0]:.4f} loss_last={hist[-1]:.4f}")
+        for _ in range(args.steps):
+            rec = tr.train_step()
+            if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
+                # All ranks arrive together; only rank 0 writes (its
+                # weights are identical to every other rank's).
+                barrier(dist_info)
+                if main_rank:
+                    path = os.path.join(tr.ckpt_dir, f"step_{tr.step:06d}.pt")
+                    tr.save(path)
+                    print(f"checkpoint -> {path}")
+                barrier(dist_info)
+        if tr.ckpt_dir:
+            barrier(dist_info)
+            if main_rank:
+                tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
+            barrier(dist_info)
+        tr.close()
+        if main_rank:
+            hist = tr.loss_history
+            print(f"done: steps={tr.step} loss_first={hist[0]:.4f} "
+                  f"loss_last={hist[-1]:.4f}")
+    finally:
+        destroy_distributed()
 
 
 if __name__ == "__main__":
