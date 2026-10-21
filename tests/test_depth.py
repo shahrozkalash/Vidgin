@@ -227,6 +227,8 @@ def test_trust_hub_repo_writes_trusted_list(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.hub, "get_dir", lambda: str(tmp_path))
     depth._trust_hub_repo("rwightman/gen-efficientnet-pytorch")
     listed = (tmp_path / "trusted_list").read_text().split()
-    assert listed == ["rwightman/gen-efficientnet-pytorch"]
+    # both spellings: slash form and underscore-joined cache-dir form
+    assert sorted(listed) == ["rwightman/gen-efficientnet-pytorch",
+                              "rwightman_gen-efficientnet-pytorch"]
     depth._trust_hub_repo("rwightman/gen-efficientnet-pytorch")  # idempotent
     assert (tmp_path / "trusted_list").read_text().split() == listed

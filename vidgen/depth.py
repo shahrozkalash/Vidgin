@@ -104,9 +104,15 @@ def _trust_hub_repo(owner_repo: str) -> None:
         if os.path.exists(path):
             with open(path) as f:
                 existing = f.read()
-        if owner_repo not in existing.split():
-            with open(path, "a") as f:
-                f.write(owner_repo + "\n")
+        have = existing.split()
+        # torch builds differ: some compare the slash form
+        # ("owner/repo"), others the underscore-joined cache-dir form
+        # ("owner_repo") — write both (observed on Colab, 2026-10-21).
+        for name in (owner_repo, owner_repo.replace("/", "_")):
+            if name not in have:
+                with open(path, "a") as f:
+                    f.write(name + "\n")
+                have.append(name)
     except OSError:
         pass
 
