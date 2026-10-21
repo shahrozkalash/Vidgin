@@ -136,6 +136,7 @@ export function generatePresetExportData(
     tiny: 'Consumer CPU / Edge Device (Apple Silicon, Laptop iGPU)',
     small: 'Single Consumer GPU (RTX 3060 / 4060 8GB-12GB)',
     vidgen480p: 'Prosumer GPU / Free Colab T4 (RTX 3090 / 4090 / T4 16GB)',
+    vidgen9b: 'High-End Datacenter GPU (A100 80GB, H100 SXM, Dual A100)',
     vidgen14b: 'High-End Datacenter GPU (A100 80GB, H100 SXM, Multi-GPU Cluster)',
   };
 

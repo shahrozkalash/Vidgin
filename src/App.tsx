@@ -11,7 +11,7 @@ import { EditorView } from './components/editor/EditorView';
 import { Film, SlidersHorizontal } from 'lucide-react';
 
 export default function App() {
-  const [currentPreset, setCurrentPreset] = useState<PresetKey>('tiny');
+  const [currentPreset, setCurrentPreset] = useState<PresetKey>('vidgen9b');
   const [activeSection, setActiveSection] = useState<string>('overview');
 
   // Determine initial view: check URL query parameter ?view=editor | ?view=overview

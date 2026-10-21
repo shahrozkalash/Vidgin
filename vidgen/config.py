@@ -138,6 +138,15 @@ def _vidgen480p() -> VidgenConfig:
     )
 
 
+def _vidgen9b() -> VidgenConfig:
+    return VidgenConfig(
+        name="vidgen9b", height=720, width=1280, frames=81,
+        latent_t=21, latent_h=90, latent_w=160,
+        dit=DiTConfig(layers=40, dim=4096, heads=32, ffn=11264, rope_split=(44, 42, 42)),
+        target_params_m=9150.0,
+    )
+
+
 def _vidgen14b() -> VidgenConfig:
     return VidgenConfig(
         name="vidgen14b", height=720, width=1280, frames=81,
@@ -151,6 +160,7 @@ PRESETS = {
     "tiny": _tiny,
     "small": _small,
     "vidgen480p": _vidgen480p,
+    "vidgen9b": _vidgen9b,
     "vidgen14b": _vidgen14b,
 }
 

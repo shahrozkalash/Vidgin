@@ -33,7 +33,7 @@ export const PresetComparisonTable: React.FC<PresetComparisonTableProps> = ({
     }, 2500);
   };
 
-  const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen14b'];
+  const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen9b', 'vidgen14b'];
 
   const presetMeta: Record<
     PresetKey,
@@ -65,6 +65,13 @@ export const PresetComparisonTable: React.FC<PresetComparisonTableProps> = ({
       speed: '~2.4s/step',
       tierLabel: 'Production Standard',
       targetHardware: 'RTX 3090 / 4090 (24GB) or A10G',
+    },
+    vidgen9b: {
+      recommendedFor: 'Big Brain high-capacity video generation (≥9B parameters)',
+      vram: '~38 GB',
+      speed: '~5.8s/step',
+      tierLabel: 'Big Brain (9.2B)',
+      targetHardware: 'A100 (80GB) or H100 GPU',
     },
     vidgen14b: {
       recommendedFor: 'Cinematic flagship photorealism',
@@ -157,7 +164,8 @@ export const PresetComparisonTable: React.FC<PresetComparisonTableProps> = ({
           <span className="text-slate-500 font-medium mr-1">Quick Pairs:</span>
           {[
             { label: 'Small vs 480p', a: 'small' as PresetKey, b: 'vidgen480p' as PresetKey },
-            { label: '480p vs 14B', a: 'vidgen480p' as PresetKey, b: 'vidgen14b' as PresetKey },
+            { label: '480p vs 9B (Big Brain)', a: 'vidgen480p' as PresetKey, b: 'vidgen9b' as PresetKey },
+            { label: '9B vs 14B', a: 'vidgen9b' as PresetKey, b: 'vidgen14b' as PresetKey },
             { label: 'Tiny vs Small', a: 'tiny' as PresetKey, b: 'small' as PresetKey },
           ].map((pair, idx) => (
             <button

@@ -30,6 +30,14 @@ def test_vidgen_480p_preset_dimensions():
     assert (cfg.dit.layers, cfg.dit.dim, cfg.dit.heads, cfg.dit.ffn) == (30, 1536, 12, 8960)
 
 
+def test_vidgen_9b_preset_dimensions():
+    cfg = get_preset("vidgen9b")
+    assert (cfg.height, cfg.width, cfg.frames) == (720, 1280, 81)
+    assert (cfg.latent_t, cfg.latent_h, cfg.latent_w) == (21, 90, 160)
+    assert cfg.num_tokens == 75600
+    assert (cfg.dit.layers, cfg.dit.dim, cfg.dit.heads, cfg.dit.ffn) == (40, 4096, 32, 11264)
+
+
 def test_vidgen_14b_preset_dimensions():
     cfg = get_preset("vidgen14b")
     assert (cfg.height, cfg.width, cfg.frames) == (720, 1280, 81)

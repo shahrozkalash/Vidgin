@@ -51,7 +51,7 @@ export function calculateLongVideoSpecs(
   } else if (presetKey === 'small') {
     height = 256;
     width = 256;
-  } else if (presetKey === 'vidgen14b') {
+  } else if (presetKey === 'vidgen9b' || presetKey === 'vidgen14b') {
     height = 720;
     width = 1280;
   }
@@ -187,6 +187,13 @@ export function estimateAttentionAnalytical(
     depth = 12;
     numHeads = 12;
     presetName = 'Small';
+  } else if (presetKey === 'vidgen9b') {
+    height = 720;
+    width = 1280;
+    dim = 4096;
+    depth = 40;
+    numHeads = 32;
+    presetName = 'Vidgen 9B';
   } else if (presetKey === 'vidgen14b') {
     height = 720;
     width = 1280;

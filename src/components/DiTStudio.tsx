@@ -27,6 +27,7 @@ import {
   BarChart3,
   Split,
   Eye,
+  Brain,
 } from 'lucide-react';
 
 interface DiTStudioProps {
@@ -38,7 +39,31 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
   const ditConfig = DIT_PRESET_CONFIGS[currentPreset];
   const paramsBreakdown = useMemo(() => calculateDiTParameters(ditConfig, currentPreset), [ditConfig, currentPreset]);
 
-  const [activeSubTab, setActiveSubTab] = useState<'block_architecture' | 'parameter_verifier' | 'timestep_adaln' | 'overfit_simulator' | 'ablation_comparison'>('block_architecture');
+  const [activeSubTab, setActiveSubTab] = useState<'block_architecture' | 'parameter_verifier' | 'big_brain_scaler' | 'timestep_adaln' | 'overfit_simulator' | 'ablation_comparison'>('big_brain_scaler');
+
+  // Big Brain Scaler Custom Architecture State
+  const [customLayers, setCustomLayers] = useState<number>(40);
+  const [customDim, setCustomDim] = useState<number>(4096);
+  const [customHeads, setCustomHeads] = useState<number>(32);
+  const [customFfn, setCustomFfn] = useState<number>(11264);
+
+  const customDitConfig = useMemo(() => ({
+    numLayers: customLayers,
+    hiddenDim: customDim,
+    numHeads: customHeads,
+    headDim: Math.round(customDim / customHeads),
+    ffnDim: customFfn,
+    textDim: 4096,
+    patchSize: [1, 2, 2] as [number, number, number],
+    inChannels: 16,
+    outChannels: 16,
+  }), [customLayers, customDim, customHeads, customFfn]);
+
+  const customBreakdown = useMemo(() => {
+    return calculateDiTParameters(customDitConfig, 'vidgen9b');
+  }, [customDitConfig]);
+
+  const isBigBrainThresholdMet = customBreakdown.totalParams >= 9_000_000_000;
 
   // Timestep & adaLN Interactive State
   const [timestep, setTimestep] = useState<number>(0.35);
@@ -114,6 +139,7 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
         {/* Sub-Tabs */}
         <div className="flex gap-2 mt-4 pt-4 border-t border-slate-800/80 overflow-x-auto no-scrollbar">
           {[
+            { id: 'big_brain_scaler', label: '🧠 Big Brain Scaler (≥9B Params)', icon: Brain },
             { id: 'block_architecture', label: 'Vidgen DiT Block Flow', icon: Layers },
             { id: 'parameter_verifier', label: 'Preset Params & Savings', icon: BarChart3 },
             { id: 'timestep_adaln', label: 'Timestep & adaLN-Zero', icon: Sliders },
@@ -139,6 +165,300 @@ export const DiTStudio: React.FC<DiTStudioProps> = ({ currentPreset }) => {
           })}
         </div>
       </div>
+
+      {/* SUB-TAB 0: BIG BRAIN SCALER (≥ 9 BILLION PARAMETERS) */}
+      {activeSubTab === 'big_brain_scaler' && (
+        <div className="space-y-6">
+          <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 space-y-6">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400">
+                    <Brain className="w-5 h-5" />
+                  </span>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    Big Brain Parameter Scaler (≥ 9 Billion Parameters)
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-300 mt-1 max-w-2xl">
+                  Configure and scale the Vidgen Video DiT backbone to reach and exceed the <strong className="text-white">9 Billion Parameter</strong> threshold.
+                  Fine-tune depth, width, attention heads, and FFN expansion with real-time mathematical parameter verification.
+                </p>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => {
+                    setCustomLayers(40);
+                    setCustomDim(4096);
+                    setCustomHeads(32);
+                    setCustomFfn(11264);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  <span>Preset: 9.2B Big Brain</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomLayers(40);
+                    setCustomDim(5120);
+                    setCustomHeads(40);
+                    setCustomFfn(13824);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Preset: 14.1B Flagship</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Threshold Banner Card */}
+            <div className={`p-5 rounded-2xl border transition-all ${
+              isBigBrainThresholdMet
+                ? 'bg-gradient-to-r from-emerald-950/60 via-slate-950 to-cyan-950/60 border-emerald-500/60 shadow-lg shadow-emerald-950/30'
+                : 'bg-gradient-to-r from-amber-950/40 via-slate-950 to-slate-950 border-amber-500/50'
+            }`}>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold font-mono uppercase tracking-wider ${
+                      isBigBrainThresholdMet
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 shadow-sm shadow-emerald-500/20'
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                    }`}>
+                      <Brain className="w-4 h-4 animate-pulse" />
+                      {isBigBrainThresholdMet ? '✓ Big Brain Threshold Satisfied (≥ 9 Billion)' : 'Below 9 Billion Threshold'}
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">
+                      Target: ≥ 9,000,000,000
+                    </span>
+                  </div>
+
+                  <div className="flex items-baseline gap-3">
+                    <span className="text-3xl sm:text-4xl font-extrabold text-white font-mono tracking-tight">
+                      {(customBreakdown.totalParams / 1e9).toFixed(3)}B
+                    </span>
+                    <span className="text-sm font-mono text-slate-300">
+                      ({customBreakdown.totalParams.toLocaleString()} parameters)
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-300">
+                    {isBigBrainThresholdMet
+                      ? `This architecture possesses high-capacity spatio-temporal reasoning, fluid narrative stability, and zero-shot prompt comprehension with ${((customBreakdown.totalParams - 9e9) / 1e9).toFixed(2)}B parameters above the 9B minimum requirement.`
+                      : 'Increase layers, hidden width, or FFN dimension using the controls below to cross 9.00 Billion parameters.'}
+                  </p>
+                </div>
+
+                {/* Progress Meter towards 9B */}
+                <div className="w-full lg:w-72 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-2">
+                  <div className="flex justify-between text-xs font-mono">
+                    <span className="text-slate-400">9B Target Progress:</span>
+                    <span className={`font-bold ${isBigBrainThresholdMet ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {Math.min(200, Math.round((customBreakdown.totalParams / 9e9) * 100))}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-slate-800">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        isBigBrainThresholdMet
+                          ? 'bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400'
+                          : 'bg-gradient-to-r from-amber-500 to-orange-400'
+                      }`}
+                      style={{ width: `${Math.min(100, (customBreakdown.totalParams / 9e9) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                    <span>0B</span>
+                    <span className="text-cyan-400 font-bold">9.0B Target</span>
+                    <span>14.0B+</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive Sliders Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Slider 1: Layers */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-slate-300">Transformer Blocks / Layers (L)</span>
+                  <span className="font-mono font-bold text-cyan-400 px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800/60">
+                    {customLayers} Layers
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="16"
+                  max="56"
+                  step="2"
+                  value={customLayers}
+                  onChange={(e) => setCustomLayers(parseInt(e.target.value))}
+                  className="w-full accent-cyan-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                  <span>16 Layers (Light)</span>
+                  <span className="text-slate-400">40 Layers (Standard 9B)</span>
+                  <span>56 Layers (Deep)</span>
+                </div>
+              </div>
+
+              {/* Slider 2: Hidden Dim */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-slate-300">Hidden Width / Dim (D)</span>
+                  <span className="font-mono font-bold text-cyan-400 px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800/60">
+                    {customDim} Channels
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="2048"
+                  max="6144"
+                  step="256"
+                  value={customDim}
+                  onChange={(e) => {
+                    const newDim = parseInt(e.target.value);
+                    setCustomDim(newDim);
+                    // Adjust heads if needed to maintain headDim ~128
+                    const heads = Math.max(16, Math.round(newDim / 128));
+                    setCustomHeads(heads);
+                  }}
+                  className="w-full accent-cyan-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                  <span>2048 (Narrow)</span>
+                  <span className="text-slate-400">4096 (9B Base)</span>
+                  <span>6144 (Ultra-Wide)</span>
+                </div>
+              </div>
+
+              {/* Slider 3: Attention Heads */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-slate-300">Attention Heads (H)</span>
+                  <span className="font-mono font-bold text-sky-400 px-2 py-0.5 rounded bg-sky-950 border border-sky-800/60">
+                    {customHeads} Heads (Dim/Head: {Math.round(customDim / customHeads)})
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="16"
+                  max="48"
+                  step="4"
+                  value={customHeads}
+                  onChange={(e) => setCustomHeads(parseInt(e.target.value))}
+                  className="w-full accent-sky-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                  <span>16 Heads</span>
+                  <span className="text-slate-400">32 Heads (9B)</span>
+                  <span>48 Heads</span>
+                </div>
+              </div>
+
+              {/* Slider 4: FFN Expansion */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-slate-300">FFN Intermediate Width</span>
+                  <span className="font-mono font-bold text-indigo-400 px-2 py-0.5 rounded bg-indigo-950 border border-indigo-800/60">
+                    {customFfn} ({((customFfn / customDim) * 1).toFixed(2)}× Expansion)
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="6144"
+                  max="18432"
+                  step="512"
+                  value={customFfn}
+                  onChange={(e) => setCustomFfn(parseInt(e.target.value))}
+                  className="w-full accent-indigo-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                  <span>6,144 (Standard)</span>
+                  <span className="text-slate-400">11,264 (9B Standard)</span>
+                  <span>18,432 (Massive)</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Architecture Metrics Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Per-Block Params</div>
+                <div className="text-base font-bold text-white font-mono mt-0.5">
+                  {(customBreakdown.totalPerBlock).toLocaleString()}
+                </div>
+                <div className="text-[10px] text-cyan-400 font-mono mt-0.5">
+                  {(customBreakdown.totalPerBlock / 1e6).toFixed(1)}M / block
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Blocks Footprint</div>
+                <div className="text-base font-bold text-emerald-400 font-mono mt-0.5">
+                  {(customBreakdown.allBlocks / 1e9).toFixed(3)}B
+                </div>
+                <div className="text-[10px] text-emerald-400/80 font-mono mt-0.5">
+                  {customLayers} repeated blocks
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Head Dimension</div>
+                <div className="text-base font-bold text-sky-400 font-mono mt-0.5">
+                  {Math.round(customDim / customHeads)}
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                  3D RoPE (44, 42, 42)
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Shared Mod Savings</div>
+                <div className="text-base font-bold text-teal-400 font-mono mt-0.5">
+                  {customBreakdown.sharedModSavingsPercent.toFixed(1)}%
+                </div>
+                <div className="text-[10px] text-teal-400/80 font-mono mt-0.5">
+                  vs per-block MLPs
+                </div>
+              </div>
+            </div>
+
+            {/* Generated Python Config Snippet */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-white font-mono">Generated Vidgen Python DiT Configuration (vidgen/config.py)</span>
+                <span className="text-[10px] font-mono text-cyan-400">Total Params: {(customBreakdown.totalParams / 1e9).toFixed(2)}B</span>
+              </div>
+              <pre className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-200 overflow-x-auto">
+{`# 🧠 Big Brain Model Configuration (${(customBreakdown.totalParams / 1e9).toFixed(2)} Billion Parameters)
+dit_config = DiTConfig(
+    layers=${customLayers},       # ${customLayers} transformer blocks
+    dim=${customDim},        # ${customDim} model hidden dimension
+    heads=${customHeads},        # ${customHeads} attention heads (${Math.round(customDim / customHeads)} dims per head)
+    ffn=${customFfn},       # ${customFfn} intermediate FFN expansion width
+    rope_split=(44, 42, 42),  # 3D RoPE spatial-temporal coordinate split
+)
+
+vidgen_config = VidgenConfig(
+    name="vidgen_big_brain",
+    height=720,
+    width=1280,
+    frames=81,               # T = 81 satisfies T = 4k + 1 (k = 20)
+    dit=dit_config,
+    text_dim=4096,
+    target_params_m=${(customBreakdown.totalParams / 1e6).toFixed(1)}, # ${(customBreakdown.totalParams / 1e9).toFixed(2)} Billion parameters
+)`}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SUB-TAB 1: VIDGEN DIT BLOCK FLOW */}
       {activeSubTab === 'block_architecture' && (

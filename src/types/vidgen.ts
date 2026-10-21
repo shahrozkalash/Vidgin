@@ -12,7 +12,7 @@ export interface BucketSpec {
   tokens: number; // After 4x temporal, 8x spatial, (1, 2, 2) patchify
 }
 
-export type PresetKey = 'tiny' | 'small' | 'vidgen480p' | 'vidgen14b';
+export type PresetKey = 'tiny' | 'small' | 'vidgen480p' | 'vidgen9b' | 'vidgen14b';
 
 export interface PresetConfig {
   key: PresetKey;

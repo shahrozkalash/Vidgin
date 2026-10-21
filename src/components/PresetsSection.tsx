@@ -51,7 +51,7 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
     }, 2500);
   };
 
-  const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen14b'];
+  const presetKeys: PresetKey[] = ['tiny', 'small', 'vidgen480p', 'vidgen9b', 'vidgen14b'];
 
   const filteredPresetKeys = presetKeys.filter((pk) => {
     const meta = PRESET_FILTER_METADATA[pk];
@@ -115,6 +115,12 @@ export const PresetsSection: React.FC<PresetsSectionProps> = ({
       vram: '~18.4 GB',
       speed: 'Standard',
       description: 'Our primary 1.3B workhorse model capable of sustained 30-second clips.',
+    },
+    vidgen9b: {
+      recommendedFor: 'Big Brain high-capacity video generation (≥9B parameters)',
+      vram: '~38 GB (A100/H100)',
+      speed: 'High-Capacity (~5.8s/step)',
+      description: 'Massive 9.2B parameter architecture for high-capacity visual intelligence, temporal stability, and zero-shot prompt comprehension.',
     },
     vidgen14b: {
       recommendedFor: 'Cinematic flagship studio grade',

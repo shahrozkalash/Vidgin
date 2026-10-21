@@ -71,6 +71,17 @@ export const DIT_PRESET_CONFIGS: Record<PresetKey, DiTBlockConfig> = {
     inChannels: 16,
     outChannels: 16,
   },
+  vidgen9b: {
+    numLayers: 40,
+    hiddenDim: 4096,
+    numHeads: 32,
+    headDim: 128,
+    ffnDim: 11264,
+    textDim: 4096,
+    patchSize: [1, 2, 2],
+    inChannels: 16,
+    outChannels: 16,
+  },
   vidgen14b: {
     numLayers: 40,
     hiddenDim: 5120,
@@ -136,6 +147,7 @@ export function calculateDiTParameters(cfg: DiTBlockConfig, presetKey: PresetKey
     tiny: { label: '~20M', count: 20_000_000 },
     small: { label: '~270M', count: 270_000_000 },
     vidgen480p: { label: '~1.3B', count: 1_350_000_000 },
+    vidgen9b: { label: '~9.2B', count: 9_150_000_000 },
     vidgen14b: { label: '~14B', count: 14_000_000_000 },
   };
 
