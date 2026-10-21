@@ -35,6 +35,13 @@ class VidgenConfig:
     dit: DiTConfig = field(default_factory=lambda: DiTConfig(8, 384, 6, 1536))
     text_dim: int = 256         # Dt: text embedding width before projection to D
     text_max_len: int = 32
+    text_layers: int = 0        # >0: TransformerTextEncoder depth. 0 = legacy
+                                # embedding-only TinyTextEncoder — every preset
+                                # and checkpoint from before the flagship text
+                                # upgrade keeps the legacy path, weights load as-is.
+    text_heads: int = 8         # attention heads inside the transformer encoder
+    text_ffn: int = 0           # encoder MLP width (0 = 4 * text_dim)
+    text_vocab_size: int = 8192  # word-hash buckets for the transformer encoder
     latent_scale: float = 1.0   # fixed latent normalizer (SD-style); applied in train
     target_params_m: float = 20.0  # documented preset size (millions), sanity only
     use_depth: bool = False     # Dawood's 3D idea: depth-map conditioning (vidgen/depth.py).
@@ -86,6 +93,8 @@ class VidgenConfig:
             )
         if self.dit.dim % self.dit.heads != 0:
             raise ValueError("DiT dim must be divisible by heads")
+        if self.text_layers > 0 and self.text_dim % self.text_heads != 0:
+            raise ValueError("Text encoder dim must be divisible by text_heads")
         return self
 
     # --- (de)serialization ------------------------------------------------
@@ -143,6 +152,8 @@ def _vidgen9b() -> VidgenConfig:
         name="vidgen9b", height=720, width=1280, frames=81,
         latent_t=21, latent_h=90, latent_w=160,
         dit=DiTConfig(layers=40, dim=4096, heads=32, ffn=11264, rope_split=(44, 42, 42)),
+        text_dim=1024, text_max_len=128,
+        text_layers=16, text_heads=16, text_ffn=4096,
         target_params_m=9150.0,
     )
 
@@ -152,6 +163,8 @@ def _vidgen14b() -> VidgenConfig:
         name="vidgen14b", height=720, width=1280, frames=81,
         latent_t=21, latent_h=90, latent_w=160,
         dit=DiTConfig(layers=40, dim=5120, heads=40, ffn=13824, rope_split=(44, 42, 42)),
+        text_dim=1024, text_max_len=128,
+        text_layers=24, text_heads=16, text_ffn=4096,
         target_params_m=14000.0,
     )
 

@@ -20,7 +20,7 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/data/filters.py` | Part 1 | CPU quality filters: Laplacian sharpness ≥ 20, motion 0.5–80, entropy aesthetic ≥ 4.0 |
 | `vidgen/data/buckets.py` | Part 2 | Bucket geometry validation, nearest-bucket assignment, manifest schema + JSON io, `BucketSampler` with `state_dict()` resumption |
 | `vidgen/vae/model.py` | Part 3 | Causal 3D VAE: past-only temporal padding, 4x temporal / 8x spatial compression, 16 latent channels; Tiny geometry `[B,3,17,64,64]` → `[B,16,5,8,8]`; T=1 → 1 latent; reparameterization + KL |
-| `vidgen/text/encoder.py` | Part 5 | `TinyTextEncoder`: learned word embeddings over a fixed caption vocab → `[B, L, Dt]` + padding mask; cached CFG null embedding; `FrozenEncoderStub` documents the umT5-XXL swap path (interface: `encode(captions) -> ([B,L,Dt], mask)`, frozen, null cached) |
+| `vidgen/text/encoder.py` | Part 5 | `TinyTextEncoder`: learned word embeddings over a fixed caption vocab → `[B, L, Dt]` + padding mask; cached CFG null embedding; `TransformerTextEncoder` (2026-10-21 flagship upgrade): word-hash tokenization + pre-norm transformer stack, selected per preset by `build_text_encoder` (`text_layers > 0`) — vidgen9b ~210M / vidgen14b ~311M params at Dt=1024, 128-token captions; `FrozenEncoderStub` documents the umT5-XXL swap path (interface: `encode(captions) -> ([B,L,Dt], mask)`, frozen, null cached) |
 | `vidgen/dit/model.py` | Part 4+6 | Exact-unfold 3D patchify (bit-exact inverse), partitioned 3D RoPE (Tiny: 22/22/20 over head-dim 64), DiT blocks (full 3D self-attn + text cross-attn + FFN) with shared AdaLN-Zero modulation; `forward(latent, t, text, mask) -> velocity` |
 | `vidgen/flow.py` | Part 7 | Rectified flow `x_t = (1-t)x_0 + t x_1`, velocity target `x_1 - x_0`; shifted logit-normal timesteps (s=5.0); 10-bin diagnostic losses |
 | `vidgen/sampler.py` | Part 8 | Euler / Midpoint / RK4 ODE samplers with classifier-free guidance; oracle recovery < 1e-5 |
@@ -41,7 +41,11 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
   vocabulary) instead of frozen umT5-XXL. The DiT consumes `[B, L, Dt]` +
   padding mask either way, so a frozen umT5 can replace the module later
   (`FrozenEncoderStub` documents the exact interface contract). This keeps the
-  whole pipeline trainable on CPU with zero downloads.
+  whole pipeline trainable on CPU with zero downloads. The flagship presets
+  (vidgen9b / vidgen14b) instead use the trainable `TransformerTextEncoder`
+  (config `text_layers` 16 / 24, Dt=1024, 128-token captions, open word-hash
+  vocabulary — any word is representable, not just a 27-word table); all other
+  presets keep the legacy encoder, so existing checkpoints load unchanged.
 - **VAE latents for DiT training**: `DiTTrainer` encodes with the VAE's `mu`
   (deterministic). A VAE trained via `train_vae.py` can be plugged in with
   `--vae-ckpt`; the CPU smoke path uses the randomly-initialized VAE, which is

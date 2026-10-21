@@ -1,2 +1,5 @@
 """Part 5: text conditioning."""
-from vidgen.text.encoder import TinyTextEncoder, FrozenEncoderStub, VOCAB  # noqa: F401
+from vidgen.text.encoder import (  # noqa: F401
+    TinyTextEncoder, TransformerTextEncoder, build_text_encoder,
+    FrozenEncoderStub, VOCAB,
+)

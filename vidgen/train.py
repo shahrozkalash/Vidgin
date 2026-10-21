@@ -29,7 +29,7 @@ from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.flow import flow_loss, rectified_flow_targets, sample_shifted_logit_normal, timestep_bins
 from vidgen.logging import StructuredLogger
 from vidgen.seed import seed_everything
-from vidgen.text.encoder import TinyTextEncoder
+from vidgen.text.encoder import build_text_encoder
 from vidgen.dit.model import DiT
 from vidgen.vae.model import CausalVAE
 
@@ -66,8 +66,7 @@ class DiTTrainer:
         self.vae.eval()
         for p in self.vae.parameters():
             p.requires_grad_(False)
-        self.text_enc = TinyTextEncoder(d_t=self.cfg.text_dim,
-                                        max_len=self.cfg.text_max_len).to(self.device)
+        self.text_enc = build_text_encoder(self.cfg).to(self.device)
         self.dit = DiT(self.cfg).to(self.device)
         if grad_checkpoint:
             self.dit.set_grad_checkpoint(True)

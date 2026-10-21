@@ -23,7 +23,7 @@ from vidgen.dit.model import DiT
 from vidgen.extend import generate_long, new_frames_per_segment, segments_for_seconds
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
-from vidgen.text.encoder import TinyTextEncoder
+from vidgen.text.encoder import build_text_encoder
 from vidgen.vae.model import CausalVAE
 
 
@@ -106,7 +106,7 @@ def main() -> None:
     if args.vae_ckpt or payload.get("vae_ckpt"):
         vp = load_checkpoint(args.vae_ckpt or payload["vae_ckpt"], map_location=device)
         vae.load_state_dict(vp["vae"])
-    text_enc = TinyTextEncoder(d_t=cfg.text_dim, max_len=cfg.text_max_len).to(device)
+    text_enc = build_text_encoder(cfg).to(device)
     dit = DiT(cfg).to(device)
     dit.load_state_dict(payload["dit"])
     text_enc.load_state_dict(payload["text_enc"])
