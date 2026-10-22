@@ -956,3 +956,200 @@ def format_split_report(report: SplitReport) -> str:
             )
     lines.append("Groups never straddle splits (no source leakage).")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------- caption auditing
+GENERIC_CAPTIONS = {
+    "", "stock video", "stock video clip", "video", "clip", "a video",
+    "stock footage", "people", "city", "city and people",
+}
+
+
+@dataclass
+class CaptionAudit:
+    """Caption-quality statistics for one manifest (Phase 3, 2026-10-22).
+
+    Captions are the ONLY teaching signal for text conditioning, and the
+    prep pipeline historically stored the *search query* as the caption —
+    a query is not a description of the actual footage. This audit does
+    not judge truth (only a human or a captioning model looking at the
+    frames can), but it flags the mechanical failure modes: empty,
+    missing, duplicated, overly generic, and very short captions, plus
+    coverage of the caption_source field that records HOW each caption
+    was produced (search query vs Gemini-from-frames vs manual).
+    """
+
+    total: int
+    missing: int
+    empty: int
+    duplicated: int
+    generic: int
+    very_short: int
+    sources: dict[str, int]
+    flagged_files: dict[str, list[str]]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def ok(self) -> bool:
+        return self.missing == 0 and self.empty == 0
+
+
+def audit_captions(entries: list[dict], *, min_words: int = 3,
+                   max_flagged: int = 50) -> CaptionAudit:
+    """Audit manifest entries' captions; see :class:`CaptionAudit`."""
+    counts = Counter(str(e.get("caption") or "").strip() for e in entries)
+    sources: Counter = Counter()
+    flagged: dict[str, list[str]] = defaultdict(list)
+    missing = empty = duplicated = generic = very_short = 0
+
+    def flag(kind: str, fname: str) -> None:
+        if len(flagged[kind]) < max_flagged:
+            flagged[kind].append(fname)
+
+    for e in entries:
+        fname = str(e.get("file", "?"))
+        sources[str(e.get("caption_source", "unknown"))] += 1
+        if "caption" not in e:
+            missing += 1
+            flag("missing", fname)
+            continue
+        cap = str(e.get("caption") or "").strip()
+        if not cap:
+            empty += 1
+            flag("empty", fname)
+            continue
+        if counts[cap] > 1:
+            duplicated += 1
+            flag("duplicated", fname)
+        if cap.lower() in GENERIC_CAPTIONS:
+            generic += 1
+            flag("generic", fname)
+        if len(cap.split()) < min_words:
+            very_short += 1
+            flag("very_short", fname)
+    return CaptionAudit(
+        total=len(entries), missing=missing, empty=empty,
+        duplicated=duplicated, generic=generic, very_short=very_short,
+        sources=dict(sources), flagged_files=dict(flagged),
+    )
+
+
+def format_caption_audit(audit: CaptionAudit) -> str:
+    lines = [
+        f"Caption audit: {audit.total} entries",
+        f"  missing: {audit.missing}   empty: {audit.empty}   "
+        f"duplicated: {audit.duplicated}   generic: {audit.generic}   "
+        f"very short: {audit.very_short}",
+        f"  caption sources: {audit.sources}",
+    ]
+    if audit.generic or audit.duplicated:
+        lines.append(
+            "  NOTE: duplicated/generic captions are usually search "
+            "queries, not descriptions of the footage — run the caption "
+            "tool (helper `captions`) before serious training.")
+    return "\n".join(lines)
+
+
+# ------------------------------------------- perceptual duplicate hunting
+def clip_signature(arr: np.ndarray, size: int = 16) -> np.ndarray:
+    """Small perceptual signature of a clip: mean-pooled grayscale frames.
+
+    Two clips with near-identical signatures are near-duplicates even if
+    their bytes differ (re-encode, slight crop). Used for leakage-safe
+    dedupe checks; exact byte duplicates remain the job of content
+    hashes in the prep tools.
+    """
+    a = np.asarray(arr)
+    if a.ndim == 4:  # (T,H,W,3) uint8
+        gray = a.astype(np.float32).mean(axis=3)
+    else:  # already (T,H,W)
+        gray = a.astype(np.float32)
+    t, h, w = gray.shape
+    gh, gw = min(size, h), min(size, w)
+    ys = (np.linspace(0, h, gh, endpoint=False)).astype(int)
+    xs = (np.linspace(0, w, gw, endpoint=False)).astype(int)
+    return gray[:, ys][:, :, xs].reshape(t, -1).mean(axis=0) / 255.0
+
+
+def find_near_duplicates(data_dir: str, *, threshold: float = 0.01,
+                         max_clips: int = 512) -> list[tuple[str, str, float]]:
+    """Pairs of clips whose perceptual signatures are within ``threshold``.
+
+    O(n^2) over at most ``max_clips`` manifest entries — a spot check
+    for big datasets, a full check for small ones. Returns
+    (file_a, file_b, mean_abs_signature_distance) sorted by distance.
+    """
+    entries = _read_manifest_strict(data_dir)[:max_clips]
+    sigs: list[tuple[str, np.ndarray]] = []
+    for e in entries:
+        path = _safe_join(data_dir, str(e["file"]))
+        if path is None or not os.path.isfile(path):
+            continue
+        arr = np.load(path, mmap_mode="r")
+        sigs.append((str(e["file"]), clip_signature(np.asarray(arr))))
+    pairs: list[tuple[str, str, float]] = []
+    for i in range(len(sigs)):
+        for j in range(i + 1, len(sigs)):
+            d = float(np.abs(sigs[i][1] - sigs[j][1]).mean())
+            if d <= threshold:
+                pairs.append((sigs[i][0], sigs[j][0], d))
+    return sorted(pairs, key=lambda p: p[2])
+
+
+# ------------------------------------------------------ split verification
+def verify_splits(data_dir: str) -> dict:
+    """Verify written splits are group-disjoint and cover the manifest.
+
+    Returns a report dict: per-split counts, groups per split, any group
+    appearing in more than one split (leakage), manifest entries missing
+    from every split, and split entries not in the manifest. Raises
+    FileNotFoundError when no split manifests exist.
+    """
+    base = _read_manifest_strict(data_dir)
+    base_files = {str(e["file"]) for e in base}
+    group_owner: dict[str, str] = {}
+    leaked: set[str] = set()
+    seen_files: set[str] = set()
+    counts: dict[str, int] = {}
+    groups: dict[str, int] = {}
+    unknown: list[str] = []
+    found = False
+    for name in SPLIT_NAMES:
+        path = os.path.join(data_dir, f"manifest_{name}.jsonl")
+        if not os.path.isfile(path):
+            continue
+        found = True
+        entries = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    entries.append(json.loads(line))
+        counts[name] = len(entries)
+        gset = set()
+        for e in entries:
+            g = split_group_key(e)
+            gset.add(g)
+            if g in group_owner and group_owner[g] != name:
+                leaked.add(g)
+            group_owner.setdefault(g, name)
+            fname = str(e["file"])
+            seen_files.add(fname)
+            if fname not in base_files:
+                unknown.append(fname)
+        groups[name] = len(gset)
+    if not found:
+        raise FileNotFoundError(
+            f"no manifest_<split>.jsonl files in {data_dir}; run make_splits first")
+    return {
+        "data_dir": data_dir,
+        "counts": counts,
+        "groups": groups,
+        "leaked_groups": sorted(leaked),
+        "missing_files": sorted(base_files - seen_files),
+        "unknown_files": unknown,
+        "ok": not leaked and not unknown,
+        "small_dataset_warning": len(base) < 50,
+    }

@@ -115,6 +115,44 @@ def resize_nearest(frame: np.ndarray, size: int) -> np.ndarray:
     return frame[ys[:, None], xs[None, :]]
 
 
+def resize_frame(frame: np.ndarray, size: int, method: str = "area") -> np.ndarray:
+    """Resize a square frame to (size, size, 3) with a quality filter.
+
+    "area" (default): cv2 INTER_AREA when shrinking, INTER_LANCZOS4 when
+    growing — the right filters for video prep; falls back to Pillow
+    (LANCZOS / box) and finally to nearest-neighbour when neither cv2
+    nor Pillow is importable. "lanczos": always the Lanczos filter.
+    "nearest": the historical pure-numpy path, kept for reproducibility
+    of old datasets. Nearest-neighbour was the pre-2026-10-22 default
+    and visibly aliases on real footage; it is no longer the default.
+    """
+    if frame.shape[0] == size:
+        return frame
+    if method == "nearest":
+        return resize_nearest(frame, size)
+    if method not in ("area", "lanczos"):
+        raise ValueError(f"unknown resize method: {method!r}")
+    try:
+        import cv2  # type: ignore
+
+        if method == "lanczos" or size > frame.shape[0]:
+            interp = cv2.INTER_LANCZOS4
+        else:
+            interp = cv2.INTER_AREA
+        return cv2.resize(frame, (size, size), interpolation=interp)
+    except ImportError:
+        pass
+    try:
+        from PIL import Image
+
+        filt = Image.LANCZOS if (method == "lanczos" or size > frame.shape[0]) \
+            else Image.BOX
+        return np.asarray(
+            Image.fromarray(frame).resize((size, size), filt))
+    except ImportError:
+        return resize_nearest(frame, size)
+
+
 def choose_video_file(video_files: list[dict]) -> dict | None:
     """Pick the cheapest file to download: smallest width >= MIN_WIDTH,
     else the smallest available. Prefers mp4."""
@@ -184,19 +222,37 @@ def decode_video(path: str, want_frames: int | None = None) -> np.ndarray:
 
 # ------------------------------------------------------------- per-video io
 def download(url: str, dest: str) -> None:
-    """Download a URL to dest with a timeout; one retry on failure."""
+    """Download a URL to dest, VERIFYING the byte count, with retries.
+
+    Bug fixed 2026-10-23: the old version streamed with copyfileobj and
+    returned success whenever the connection closed — including when it
+    closed EARLY. Through a proxy under parallel load that silently
+    truncated most files, and the truncated videos then failed as
+    "too_short"/"decode_error" downstream (215 of 250 clips lost in one
+    local chunk before this was caught). Now: when the server sends a
+    Content-Length, the file on disk must match it exactly, and any
+    short read (including http.client.IncompleteRead) is retried.
+    """
+    import http.client
+
     last = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "vidgin-prepare/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r, open(
-                dest, "wb"
-            ) as f:
-                shutil.copyfileobj(r, f, length=1024 * 256)
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                expected = r.headers.get("Content-Length")
+                with open(dest, "wb") as f:
+                    shutil.copyfileobj(r, f, length=1024 * 256)
+            if expected is not None:
+                got = os.path.getsize(dest)
+                if got != int(expected):
+                    raise OSError(
+                        f"truncated download: got {got} of {expected} bytes")
             return
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+        except (urllib.error.URLError, OSError, TimeoutError,
+                http.client.IncompleteRead) as e:
             last = e
             time.sleep(1 + attempt)
     raise RuntimeError(f"download failed: {url}: {last}")
@@ -324,29 +380,65 @@ def collect_pixabay(api_key: str, queries: list[str], per_query: int) -> list[tu
 
 
 # ------------------------------------------------------------ clip building
-def build_clip(frames: np.ndarray, n_frames: int, size: int) -> tuple[np.ndarray | None, str | None]:
+def build_clip(frames: np.ndarray, n_frames: int, size: int,
+               resize_method: str = "area",
+               thresholds: dict | None = None
+               ) -> tuple[np.ndarray | None, str | None]:
     """frames (N,H,W,3) uint8 -> (clip (T,H,W,3) uint8, None) or (None, reason)."""
     idx = select_frame_indices(len(frames), n_frames)
     if idx is None:
         return None, "too_short"
     window = frames[idx]
     out = np.stack(
-        [resize_nearest(center_crop_square(f), size) for f in window]
+        [resize_frame(center_crop_square(f), size, resize_method)
+         for f in window]
     ).astype(np.uint8)
     if float(out.mean()) < MEAN_BRIGHTNESS_MIN:
         return None, "too_dark"
     # reuse the trainer's own quality filters (expects [3,T,H,W] in [-1,1])
     norm = out.transpose(3, 0, 1, 2).astype(np.float32) / 127.5 - 1.0
-    q = passes_quality(norm)
+    q = passes_quality(norm, thresholds)
     if not q["pass"]:
         why = ",".join(
             k for k, ok in
             (("sharp", q["sharpness_ok"]), ("motion", q["motion_ok"]),
-             ("aesthetic", q["aesthetic_ok"]))
+             ("aesthetic", q["aesthetic_ok"]),
+             ("brightness", q["brightness_ok"]))
             if not ok
         )
         return None, f"quality_fail({why})"
     return out, None
+
+
+def write_contact_sheet(out_dir: str, max_clips: int = 16) -> str | None:
+    """Save a contact-sheet PNG of kept clips' middle frames for eyeball QA.
+
+    Lets a human inspect visual quality BEFORE training on a batch.
+    Returns the sheet path, or None when Pillow/clips are unavailable.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    names = sorted(
+        f for f in os.listdir(out_dir)
+        if f.startswith("clip_") and f.endswith(".npy") and "depth" not in f
+    )[:max_clips]
+    if not names:
+        return None
+    thumbs = []
+    for name in names:
+        arr = np.load(os.path.join(out_dir, name), mmap_mode="r")
+        thumbs.append(np.asarray(arr[arr.shape[0] // 2]))
+    th, tw = thumbs[0].shape[:2]
+    cols = int(np.ceil(np.sqrt(len(thumbs))))
+    rows = int(np.ceil(len(thumbs) / cols))
+    sheet = Image.new("RGB", (cols * tw, rows * th))
+    for i, t in enumerate(thumbs):
+        sheet.paste(Image.fromarray(t), ((i % cols) * tw, (i // cols) * th))
+    path = os.path.join(out_dir, "contact_sheet.png")
+    sheet.save(path)
+    return path
 
 
 def main() -> None:
@@ -374,7 +466,37 @@ def main() -> None:
                     help="also estimate a 3D depth map per kept clip "
                          "(MiDaS; needs internet once) and record it in "
                          "the manifest for depth-conditioned training")
+    ap.add_argument("--resize", choices=["area", "lanczos", "nearest"],
+                    default="area",
+                    help="resize filter: area (default; INTER_AREA down / "
+                         "LANCZOS up), lanczos, or nearest (the historical "
+                         "pre-2026-10-22 behaviour, kept for reproducibility)")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seed recorded in prep_report.json; processing "
+                         "order is the input order, so a run is "
+                         "deterministic for a fixed input list")
+    ap.add_argument("--min-sharpness", type=float, default=None)
+    ap.add_argument("--min-motion", type=float, default=None)
+    ap.add_argument("--max-motion", type=float, default=None)
+    ap.add_argument("--min-aesthetic", type=float, default=None)
+    ap.add_argument("--min-brightness", type=float, default=None,
+                    help="0..255 mean-brightness floor (default: none — "
+                         "valid dark scenes are not rejected)")
+    ap.add_argument("--max-brightness", type=float, default=None,
+                    help="0..255 mean-brightness ceiling (overexposure)")
+    ap.add_argument("--no-contact-sheet", action="store_true",
+                    help="skip writing contact_sheet.png QA preview")
     args = ap.parse_args()
+    thresholds = {}
+    for cli, key in (("min_sharpness", "sharpness_min"),
+                     ("min_motion", "motion_min"),
+                     ("max_motion", "motion_max"),
+                     ("min_aesthetic", "aesthetic_min"),
+                     ("min_brightness", "brightness_min"),
+                     ("max_brightness", "brightness_max")):
+        v = getattr(args, cli)
+        if v is not None:
+            thresholds[key] = v
 
     if (args.frames - 1) % 4 != 0:
         sys.exit(f"error: --frames must satisfy (T-1) % 4 == 0, got {args.frames}")
@@ -480,7 +602,9 @@ def main() -> None:
                     reasons["decode_error"] = reasons.get("decode_error", 0) + 1
                     print(f"[{n}/{len(items)}] skip decode: {e}", flush=True)
                     continue
-                clip, reason = build_clip(frames, args.frames, args.size)
+                clip, reason = build_clip(frames, args.frames, args.size,
+                                          resize_method=args.resize,
+                                          thresholds=thresholds or None)
                 if clip is None:
                     skipped += 1
                     reasons[reason] = reasons.get(reason, 0) + 1  # type: ignore[arg-type]
@@ -493,7 +617,17 @@ def main() -> None:
                 seen_hashes.add(h)
                 name = f"clip_{kept_offset + kept + 1:06d}.npy"
                 np.save(os.path.join(args.out, name), clip)
-                rec = {"file": name, "caption": caption}
+                # The caption at prep time is the SEARCH QUERY (API
+                # sources) or a filename guess (urls source) — never a
+                # description of the actual footage. Record that
+                # honestly; caption_clips.py later replaces `caption`
+                # with a from-frames description and keeps this one as
+                # `caption_weak`.
+                rec = {"file": name, "caption": caption,
+                       "caption_source": ("search_query"
+                                          if args.source in ("pexels", "pixabay")
+                                          else "filename"),
+                       "source_url": url}
                 if args.depth:
                     from vidgen.depth import estimate_depth
 
@@ -518,6 +652,32 @@ def main() -> None:
     print(f"skipped:          {skipped} {reasons if reasons else ''}")
     print(f"dataset on disk:  {mb:.1f} MB in {args.out}")
     print(f"manifest:         {manifest_path} ({existing_count + kept} lines)")
+
+    # Machine-readable prep report + visual QA sheet (2026-10-22): the
+    # report records exactly how this batch was made (config, seed,
+    # thresholds, rejection reasons) so a dataset is reproducible and
+    # auditable; source URLs/queries stay in the manifest pipeline.
+    sheet = None if args.no_contact_sheet else write_contact_sheet(args.out)
+    report = {
+        "tool": "prepare_clips.py",
+        "seed": args.seed,
+        "config": {
+            "frames": args.frames, "size": args.size, "depth": args.depth,
+            "resize": args.resize, "thresholds": thresholds,
+            "source": args.source,
+        },
+        "videos_seen": len(items), "downloaded": downloaded,
+        "kept_this_run": kept, "clips_total": existing_count + kept,
+        "skipped": skipped, "rejection_reasons": reasons,
+        "bytes_written_this_run": bytes_written,
+        "contact_sheet": os.path.basename(sheet) if sheet else None,
+    }
+    with open(os.path.join(args.out, "prep_report.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    print(f"prep report:      {os.path.join(args.out, 'prep_report.json')}")
+    if sheet:
+        print(f"contact sheet:    {sheet}")
 
 
 if __name__ == "__main__":

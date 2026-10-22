@@ -52,13 +52,42 @@ def aesthetic(clip: np.ndarray) -> float:
     return float(np.mean(scores))
 
 
-def passes_quality(clip: np.ndarray) -> dict:
-    """Return per-filter scores and an overall pass flag."""
-    s, m, a = sharpness(clip), motion(clip), aesthetic(clip)
-    ok = (s >= SHARPNESS_MIN) and (MOTION_MIN <= m <= MOTION_MAX) and (a >= AESTHETIC_MIN)
+def brightness(clip: np.ndarray) -> float:
+    """Mean grayscale level on the 0..255 scale (darkness/overexposure)."""
+    return float(_to_gray_uint8(clip).mean())
+
+
+def passes_quality(clip: np.ndarray, thresholds: dict | None = None) -> dict:
+    """Return per-filter scores and an overall pass flag.
+
+    ``thresholds`` optionally overrides any of the module defaults:
+    sharpness_min, motion_min, motion_max, aesthetic_min, plus the new
+    brightness_min / brightness_max bounds (defaults 0..255 = no bound,
+    so historical behaviour is unchanged unless a caller opts in).
+    These scores are heuristics, not universal quality truths: a valid
+    night scene is dark, a valid portrait can be near-static. Callers
+    preparing real datasets should set thresholds for their footage
+    instead of treating the defaults as laws.
+    """
+    t = {
+        "sharpness_min": SHARPNESS_MIN, "motion_min": MOTION_MIN,
+        "motion_max": MOTION_MAX, "aesthetic_min": AESTHETIC_MIN,
+        "brightness_min": 0.0, "brightness_max": 255.0,
+    }
+    if thresholds:
+        unknown = set(thresholds) - set(t)
+        if unknown:
+            raise ValueError(f"unknown quality thresholds: {sorted(unknown)}")
+        t.update(thresholds)
+    s, m, a, b = sharpness(clip), motion(clip), aesthetic(clip), brightness(clip)
+    ok = (s >= t["sharpness_min"] and t["motion_min"] <= m <= t["motion_max"]
+          and a >= t["aesthetic_min"]
+          and t["brightness_min"] <= b <= t["brightness_max"])
     return {
-        "sharpness": s, "sharpness_ok": s >= SHARPNESS_MIN,
-        "motion": m, "motion_ok": MOTION_MIN <= m <= MOTION_MAX,
-        "aesthetic": a, "aesthetic_ok": a >= AESTHETIC_MIN,
+        "sharpness": s, "sharpness_ok": s >= t["sharpness_min"],
+        "motion": m, "motion_ok": t["motion_min"] <= m <= t["motion_max"],
+        "aesthetic": a, "aesthetic_ok": a >= t["aesthetic_min"],
+        "brightness": b,
+        "brightness_ok": t["brightness_min"] <= b <= t["brightness_max"],
         "pass": ok,
     }

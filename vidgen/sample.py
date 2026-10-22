@@ -24,7 +24,7 @@ from vidgen.extend import generate_long, new_frames_per_segment, segments_for_se
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
-from vidgen.text.tokenizer import CaptionTokenizer
+from vidgen.text.tokenizer import CaptionTokenizer, tokenizer_from_dict
 from vidgen.vae.model import CausalVAE
 
 
@@ -117,7 +117,7 @@ def main() -> None:
         vae.load_state_dict(vp["vae"])
     # Phase 2: caption-mode checkpoints carry their exact tokenizer;
     # inference must tokenize exactly as training did.
-    sample_tokenizer = (CaptionTokenizer.from_dict(payload["tokenizer"])
+    sample_tokenizer = (tokenizer_from_dict(payload["tokenizer"])
                         if payload.get("tokenizer") is not None else None)
     if getattr(cfg, "text_tokenizer", "hash") == "caption" and sample_tokenizer is None:
         raise SystemExit(

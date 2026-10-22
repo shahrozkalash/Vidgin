@@ -33,12 +33,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vidgen.data.dataset_tools import (  # noqa: E402
     DEFAULT_DARK_THRESHOLD,
+    _read_manifest_strict,
+    audit_captions,
     check_dataset,
+    find_near_duplicates,
+    format_caption_audit,
     format_dataset_report,
     format_pack_report,
     format_split_report,
     make_splits,
     pack_datasets,
+    verify_splits,
 )
 
 
@@ -114,6 +119,30 @@ def build_parser() -> argparse.ArgumentParser:
                        help="split seed; the same seed reproduces the same split")
     split.add_argument("--overwrite", action="store_true",
                        help="regenerate split manifests that already exist")
+
+    caudit = sub.add_parser(
+        "captions-audit",
+        help="audit caption quality: empty/duplicated/generic/search-query captions",
+    )
+    caudit.add_argument("data_dir", help="prepared clips directory")
+    caudit.add_argument("--json", dest="json_path", default=None,
+                        help="also write the audit as JSON to this path")
+
+    vsplit = sub.add_parser(
+        "verify-splits",
+        help="verify split manifests are group-disjoint (no source leakage)",
+    )
+    vsplit.add_argument("data_dir", help="prepared clips directory with splits")
+
+    ndup = sub.add_parser(
+        "near-duplicates",
+        help="find perceptually near-duplicate clips (re-encodes/crops of one source)",
+    )
+    ndup.add_argument("data_dir", help="prepared clips directory")
+    ndup.add_argument("--threshold", type=float, default=0.01,
+                      help="max mean signature distance to call two clips duplicates")
+    ndup.add_argument("--max-clips", type=int, default=512,
+                      help="cap on clips compared (the check is pairwise)")
 
     return parser
 
@@ -199,6 +228,46 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         print(format_split_report(report))
+        return 0
+
+    if args.command == "captions-audit":
+        try:
+            entries = _read_manifest_strict(args.data_dir)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        audit = audit_captions(entries)
+        print(format_caption_audit(audit))
+        if args.json_path:
+            _write_json(args.json_path, audit.to_dict())
+            print(f"JSON report: {args.json_path}")
+        return 0 if audit.ok else 1
+
+    if args.command == "verify-splits":
+        try:
+            result = verify_splits(args.data_dir)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2))
+        if result["small_dataset_warning"]:
+            print("WARNING: fewer than 50 clips — validation metrics on "
+                  "this dataset are not meaningful yet.")
+        return 0 if result["ok"] else 1
+
+    if args.command == "near-duplicates":
+        try:
+            pairs = find_near_duplicates(
+                args.data_dir, threshold=args.threshold,
+                max_clips=args.max_clips)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if not pairs:
+            print("No near-duplicate pairs found.")
+        for a, b, d in pairs:
+            print(f"  {a} ~ {b}  (distance {d:.4f})")
+        print(f"{len(pairs)} near-duplicate pair(s).")
         return 0
 
     raise AssertionError(f"unhandled command: {args.command}")

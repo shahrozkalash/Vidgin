@@ -153,6 +153,13 @@ class CausalVAE(nn.Module):
         return recon, mu, logvar, kl
 
 
-def vae_loss(recon, x, kl, kl_weight: float = 1e-4):
+def vae_loss(recon, x, kl, kl_weight: float = 1e-4, recon_weight: float = 1.0):
+    """Total VAE loss: recon_weight * MSE + kl_weight * KL.
+
+    ``recon_weight`` defaults to 1.0 (the historical loss); it exists so
+    an experiment can rebalance reconstruction against KL pressure
+    without editing code. Returns (total, recon, kl) with recon/kl the
+    UNWEIGHTED terms, so logged numbers stay comparable across weights.
+    """
     recon_loss = F.mse_loss(recon, x)
-    return recon_loss + kl_weight * kl, recon_loss, kl
+    return recon_weight * recon_loss + kl_weight * kl, recon_loss, kl

@@ -54,7 +54,8 @@ from vidgen.vae.model import CausalVAE, vae_loss
 
 class VAETrainer:
     def __init__(self, preset: str = "tiny", seed: int = 0, lr: float = 1e-4,
-                 kl_weight: float = 1e-4, batch_size: int = 2, num_clips: int = 64,
+                 kl_weight: float = 1e-4, recon_weight: float = 1.0,
+                 batch_size: int = 2, num_clips: int = 64,
                  device: str = "cpu", ckpt_dir: str | None = None,
                  log_path: str | None = None, data_dir: str | None = None,
                  data_shard: tuple[int, int] | None = None,
@@ -80,6 +81,7 @@ class VAETrainer:
         self.device = resolve_rank_device(resolve_device(device), dist_info)
         self.batch_size = batch_size
         self.kl_weight = kl_weight
+        self.recon_weight = recon_weight
         self.ckpt_dir = ckpt_dir
         if ckpt_dir:
             os.makedirs(ckpt_dir, exist_ok=True)
@@ -170,7 +172,9 @@ class VAETrainer:
             clips = torch.stack([self.dataset[i][0] for i in batch_idx]).to(self.device)
             with amp_context(self.device, self.amp):
                 recon, mu, logvar, kl = self.vae(clips)
-                loss, recon_loss, kl_term = vae_loss(recon, clips, kl, self.kl_weight)
+                loss, recon_loss, kl_term = vae_loss(
+                    recon, clips, kl, self.kl_weight,
+                    getattr(self, "recon_weight", 1.0))
             scaled = loss / self.grad_accum
             if self.scaler is not None:
                 self.scaler.scale(scaled).backward()
@@ -195,6 +199,9 @@ class VAETrainer:
                "lr": self.opt.param_groups[0]["lr"], "grad_norm": float(grad_norm),
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
+        if str(self.device).startswith("cuda") and torch.cuda.is_available():
+            rec["gpu_mem_mb"] = round(
+                torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
         self.loss_history.append(rec["loss"])
         if self.logger:
             self.logger.log(rec)
@@ -311,6 +318,9 @@ def main() -> None:
     ap.add_argument("--num-clips", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--kl-weight", type=float, default=1e-4)
+    ap.add_argument("--recon-weight", type=float, default=1.0,
+                    help="weight of the reconstruction term in the VAE "
+                         "loss (default 1.0 = historical loss)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--ckpt-dir", default="checkpoints/tiny-vae")
@@ -385,7 +395,8 @@ def main() -> None:
         if args.resume:
             tr = VAETrainer.resume(
                 args.resume, seed=args.seed, lr=args.lr,
-                kl_weight=args.kl_weight, batch_size=args.batch_size,
+                kl_weight=args.kl_weight, recon_weight=args.recon_weight,
+                batch_size=args.batch_size,
                 num_clips=args.num_clips, device=args.device,
                 ckpt_dir=args.ckpt_dir, log_path=args.log,
                 data_dir=args.data_dir, data_shard=args.data_shard,
@@ -399,6 +410,7 @@ def main() -> None:
         else:
             tr = VAETrainer(preset=args.preset, seed=args.seed, lr=args.lr,
                             kl_weight=args.kl_weight,
+                            recon_weight=args.recon_weight,
                             batch_size=args.batch_size,
                             num_clips=args.num_clips, device=args.device,
                             ckpt_dir=args.ckpt_dir, log_path=args.log,

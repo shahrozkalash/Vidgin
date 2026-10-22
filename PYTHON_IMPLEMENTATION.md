@@ -946,3 +946,62 @@ In Vidgin's philosophy, natural talking faces, jaw motion, and facial expression
     `checkpoints_smoke/sample1/frames.npy`, shape `(17, 64, 64, 3)`,
     range `[-0.358, 0.019]` — correct shape/range (variance still tiny after
     only 18 steps, as expected; structure emerges with longer training).
+
+## Master improvement programme (2026-10-22, second prompt)
+
+A second audit-driven pass over the same weakest parts, one day after
+the targeted programme above. Everything is backward compatible:
+defaults reproduce historical behaviour unless a caller opts in.
+
+- **Truncated-download fix (critical, found live).** `prepare_clips.py`
+  `download()` streamed with `copyfileobj` and treated connection-close
+  as success, so a proxy closing early silently saved partial videos;
+  they then failed downstream as `too_short`/`decode_error` (215 of
+  250 clips lost in one local chunk; Kaggle's network rarely triggered
+  it). Downloads now verify the byte count against `Content-Length`
+  and retry (3 attempts, `IncompleteRead` included). Regression tests
+  cover both the truncated and complete cases.
+- **Prep quality.** Resize is no longer nearest-neighbour by default:
+  `--resize area|lanczos|nearest` (`area` = INTER_AREA down / LANCZOS
+  up via cv2, Pillow fallback). Quality filters are configurable
+  (`passes_quality(clip, thresholds)`; prep flags `--min-sharpness`,
+  `--min/max-motion`, `--min-aesthetic`, `--min/max-brightness` —
+  brightness bounds default OFF so valid dark/static scenes are not
+  rejected by a universal rule). Prep records `caption_source`
+  (`search_query`/`filename`) and `source_url` in the manifest, and
+  writes `prep_report.json` (config, seed, rejection reasons) plus a
+  `contact_sheet.png` QA preview into every output folder.
+- **Caption audit.** `vidgen.data.dataset_tools.audit_captions` +
+  helper `captions-audit`: counts missing/empty/duplicated/generic/
+  very-short captions and the `caption_source` mix — the mechanical
+  failure modes of search-query captions, flagged before training.
+- **BPE subword tokenizer.** `vidgen/text/bpe.py`: byte-pair encoding
+  implemented from scratch (deterministic merges: frequency, then
+  lexicographic), trained on Vidgin's own captions, mirroring the
+  word-level interface (same special ids, encode/decode/save/load).
+  Unseen words split into known subwords instead of collapsing to one
+  `<unk>` ("skateboarding" -> s-k-a-t-e-b-o-ar-d-ing; the typo
+  "walkking" keeps its "walk" stem). Checkpoints store either kind;
+  `tokenizer_from_dict` dispatches on the payload format tag in
+  train/sample/evaluate. `build_tokenizer.py --method bpe` prints the
+  word-vs-BPE coverage comparison for the same corpus. Which one wins
+  for Vidgin is an empirical question — word-level remains the default.
+- **Training hardening.** Checkpoint saves are atomic
+  (`vidgen/checkpoint.py`: temp file + `os.replace`, so a killed
+  session can no longer truncate the only resume point). Both trainers'
+  step records add `gpu_mem_mb` on CUDA. The VAE loss gains a
+  `--recon-weight` term (default 1.0 = historical loss).
+- **Leakage tools.** `find_near_duplicates` (perceptual 16x16
+  signature distance; helper `near-duplicates`) catches
+  re-encodes/crops of one source that byte hashes miss, and
+  `verify_splits` (helper `verify-splits`) proves written splits are
+  group-disjoint, complete, and warns when a dataset is too small for
+  meaningful validation (<50 clips).
+- **Reproducible evaluation.** `scripts/run_evaluation.py` runs the
+  whole evidence chain in one command — dataset health, caption audit,
+  tokenizer coverage, split leakage, VAE reconstruction (via
+  `measure_latents.py`), DiT sample evaluation (via
+  `evaluate_checkpoint.py`) — and writes one JSON report with
+  provenance (git commit, seed, Python/torch versions, dataset size)
+  and pass/warn/fail/skipped per step. `--compare` diffs metric
+  deltas against a previous report.

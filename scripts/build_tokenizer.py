@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from vidgen.text.bpe import BPETokenizer
 from vidgen.text.tokenizer import CaptionTokenizer, audit_hash_collisions
 
 
@@ -66,6 +67,11 @@ def main() -> int:
                     help="maximum vocabulary size including special tokens")
     ap.add_argument("--min-freq", type=int, default=1,
                     help="drop words appearing fewer times than this")
+    ap.add_argument("--method", choices=["word", "bpe"], default="word",
+                    help="word: word-level vocabulary (default). bpe: "
+                         "subword byte-pair encoding learned from the "
+                         "same captions — unseen words split into known "
+                         "subwords instead of collapsing to <unk>")
     args = ap.parse_args()
 
     captions = collect_captions(args.data_dir)
@@ -73,6 +79,26 @@ def main() -> int:
         print("error: no captions found in the given dataset directories",
               file=sys.stderr)
         return 2
+
+    if args.method == "bpe":
+        tokenizer = BPETokenizer.train(captions, vocab_size=args.max_vocab)
+        tokenizer.save(args.out)
+        word_ref = CaptionTokenizer.train(
+            captions, max_vocab=args.max_vocab, min_freq=args.min_freq)
+        avg_len = sum(len(tokenizer.encode(c)) for c in captions) / len(captions)
+        print(f"Captions:        {len(captions)}")
+        print(f"Method:          bpe (subword, {len(tokenizer.merges)} merges)")
+        print(f"Vocabulary:      {len(tokenizer)} units (incl. 4 specials)")
+        print(f"OOV words:       {tokenizer.oov_rate(captions):.4f} "
+              f"(words containing a character never seen in training)")
+        print(f"UNK token rate:  {tokenizer.unk_token_rate(captions):.4f} "
+              f"of emitted subword tokens")
+        print(f"Avg length:      {avg_len:.1f} tokens per caption")
+        print(f"Word-level comparison (same corpus, vocab {args.max_vocab}): "
+              f"OOV rate {word_ref.oov_rate(captions):.4f}")
+        print(f"Saved:           {args.out}")
+        return 0
+
     tokenizer = CaptionTokenizer.train(
         captions, max_vocab=args.max_vocab, min_freq=args.min_freq)
     tokenizer.save(args.out)

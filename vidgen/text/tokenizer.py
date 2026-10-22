@@ -168,3 +168,32 @@ class CaptionTokenizer:
     def load(cls, path: str) -> "CaptionTokenizer":
         with open(path, "r", encoding="utf-8") as f:
             return cls.from_dict(json.load(f))
+
+
+def tokenizer_from_dict(data: dict):
+    """Rebuild EITHER tokenizer kind from a serialized payload.
+
+    Dispatches on the payload's ``format`` tag: word-level
+    (:class:`CaptionTokenizer`) or subword
+    (:class:`~vidgen.text.bpe.BPETokenizer`). Checkpoint code must use
+    this instead of assuming the word-level class, so a checkpoint
+    trained with BPE resumes and samples with BPE. Raises ValueError
+    for unknown formats — an incompatible tokenizer is a hard error,
+    never a silent fallback.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"tokenizer payload must be a dict, got {type(data)}")
+    fmt = data.get("format")
+    if fmt == FORMAT_TAG:
+        return CaptionTokenizer.from_dict(data)
+    from vidgen.text.bpe import BPE_FORMAT_TAG, BPETokenizer
+
+    if fmt == BPE_FORMAT_TAG:
+        return BPETokenizer.from_dict(data)
+    raise ValueError(f"unknown tokenizer format: {fmt!r}")
+
+
+def load_tokenizer(path: str):
+    """Load a tokenizer JSON file of either kind (see tokenizer_from_dict)."""
+    with open(path, "r", encoding="utf-8") as f:
+        return tokenizer_from_dict(json.load(f))

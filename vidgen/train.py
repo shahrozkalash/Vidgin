@@ -52,7 +52,7 @@ from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
-from vidgen.text.tokenizer import CaptionTokenizer
+from vidgen.text.tokenizer import CaptionTokenizer, load_tokenizer, tokenizer_from_dict
 from vidgen.train_utils import (
     amp_context, build_lr_scheduler, make_grad_scaler, validate_train_options,
 )
@@ -303,6 +303,9 @@ class DiTTrainer:
                "bin_loss": [round(v, 5) for v in bin_mean],
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
+        if str(self.device).startswith("cuda") and torch.cuda.is_available():
+            rec["gpu_mem_mb"] = round(
+                torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
         self.loss_history.append(rec["loss"])
         if self.logger:
             self.logger.log(rec)
@@ -419,7 +422,7 @@ class DiTTrainer:
                 "trainer uses a caption tokenizer; the two tokenizations "
                 "are incompatible")
         if donor_tok is not None and self.tokenizer is not None \
-                and CaptionTokenizer.from_dict(donor_tok) != self.tokenizer:
+                and tokenizer_from_dict(donor_tok) != self.tokenizer:
             raise ValueError(
                 f"{path} was trained with a DIFFERENT caption tokenizer "
                 "vocabulary; token ids would not mean the same words")
@@ -457,7 +460,7 @@ class DiTTrainer:
         # vocabulary; the text encoder must be built with it BEFORE the
         # weights load. A conflicting --tokenizer-vocab is an error.
         if payload.get("tokenizer") is not None:
-            stored_tok = CaptionTokenizer.from_dict(payload["tokenizer"])
+            stored_tok = tokenizer_from_dict(payload["tokenizer"])
             given_tok = kwargs.get("tokenizer")
             if given_tok is not None and given_tok != stored_tok:
                 raise ValueError(
@@ -606,7 +609,7 @@ def main() -> None:
     if args.data_split and not args.data_dir:
         ap.error("--data-split needs --data-dir (splits live in the "
                  "real-clip dataset directory)")
-    cli_tokenizer = (CaptionTokenizer.load(args.tokenizer_vocab)
+    cli_tokenizer = (load_tokenizer(args.tokenizer_vocab)
                      if args.tokenizer_vocab else None)
     # Under torchrun this initializes the process group (nccl on CUDA,
     # gloo on CPU); without torchrun it is a no-op single-process info.

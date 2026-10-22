@@ -41,7 +41,7 @@ from vidgen.evaluate import evaluate_clip_set
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
-from vidgen.text.tokenizer import CaptionTokenizer
+from vidgen.text.tokenizer import CaptionTokenizer, tokenizer_from_dict
 from vidgen.vae.model import CausalVAE
 from vidgen.video_io import write_mp4
 
@@ -69,7 +69,7 @@ def generate_clips(dit_ckpt: str, vae_ckpt: str | None, prompts, seeds,
     vae = CausalVAE().to(device).eval()
     vae.load_state_dict(vp["vae"])
 
-    tokenizer = (CaptionTokenizer.from_dict(payload["tokenizer"])
+    tokenizer = (tokenizer_from_dict(payload["tokenizer"])
                  if payload.get("tokenizer") is not None else None)
     if getattr(cfg, "text_tokenizer", "hash") == "caption" and tokenizer is None:
         raise ValueError("caption-mode checkpoint carries no tokenizer "
