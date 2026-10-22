@@ -65,6 +65,7 @@ class DiTTrainer:
                  grad_checkpoint: bool = False,
                  use_depth: bool = False, depth_dropout: float = 0.1,
                  data_shard: tuple[int, int] | None = None,
+                 data_split: str | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -110,10 +111,14 @@ class DiTTrainer:
         # only on its disjoint slice of the dataset. None = full dataset,
         # the original behavior exactly.
         self.data_shard = data_shard
+        self.data_split = data_split
         if data_dir:
+            manifest_name = (f"manifest_{data_split}.jsonl" if data_split
+                             else "manifest.jsonl")
             self.dataset = FolderClipDataset(
                 data_dir, height=self.cfg.height, width=self.cfg.width,
-                frames=self.cfg.frames, shard=data_shard)
+                frames=self.cfg.frames, shard=data_shard,
+                manifest_name=manifest_name)
             num_items = len(self.dataset)
         else:
             self.dataset = MovingMNISTDataset(
@@ -390,6 +395,15 @@ def main() -> None:
     ap.add_argument("--data-dir", default=None,
                     help="prepared real-clip dataset dir (manifest.jsonl + .npy clips); "
                          "when set, it replaces Moving MNIST")
+    ap.add_argument("--data-split", default=None,
+                    choices=["train", "val", "test"],
+                    help="train on one deterministic split written by "
+                         "vidgin_helper.py split (manifest_<split>.jsonl "
+                         "inside --data-dir); default: the full manifest")
+    ap.add_argument("--require-real", action="store_true",
+                    help="fail loudly unless --data-dir names a real-clip "
+                         "dataset: never silently train on synthetic "
+                         "Moving MNIST when real training was requested")
     ap.add_argument("--grad-checkpoint", action="store_true",
                     help="activation checkpointing for the DiT (needed to "
                          "train Small and larger presets in limited memory)")
@@ -410,10 +424,21 @@ def main() -> None:
                  "fresh one (e.g. a pool round)")
     if args.start_step is not None and not args.init_weights:
         ap.error("--start-step only applies with --init-weights")
+    if args.require_real and not args.data_dir:
+        ap.error("--require-real needs --data-dir: refusing to fall back "
+                 "to synthetic Moving MNIST for a real training run")
+    if args.data_split and not args.data_dir:
+        ap.error("--data-split needs --data-dir (splits live in the "
+                 "real-clip dataset directory)")
     # Under torchrun this initializes the process group (nccl on CUDA,
     # gloo on CPU); without torchrun it is a no-op single-process info.
     dist_info = init_distributed(args.device)
     main_rank = dist_info.is_main
+    if main_rank and not args.data_dir:
+        print("WARNING: no --data-dir given - training on SYNTHETIC "
+              "Moving MNIST. This is a smoke test only, NOT real-video "
+              "training. Pass --data-dir <dataset> (and --require-real "
+              "to make this fallback an error).")
     try:
         if args.resume:
             tr = DiTTrainer.resume(
@@ -421,7 +446,7 @@ def main() -> None:
                 batch_size=args.batch_size, num_clips=args.num_clips,
                 device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
                 vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
-                data_shard=args.data_shard,
+                data_shard=args.data_shard, data_split=args.data_split,
                 dist_info=dist_info)
             if args.grad_checkpoint:
                 unwrap_model(tr.dit).set_grad_checkpoint(True)
@@ -445,6 +470,7 @@ def main() -> None:
                             device=args.device, ckpt_dir=args.ckpt_dir,
                             log_path=args.log, vae_ckpt=args.vae_ckpt,
                             data_dir=args.data_dir,
+                            data_split=args.data_split,
                             grad_checkpoint=args.grad_checkpoint,
                             use_depth=use_depth,
                             depth_dropout=args.depth_dropout,

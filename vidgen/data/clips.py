@@ -31,8 +31,8 @@ from torch.utils.data import Dataset
 MANIFEST_NAME = "manifest.jsonl"
 
 
-def _load_manifest(data_dir: str) -> list[dict]:
-    manifest_path = os.path.join(data_dir, MANIFEST_NAME)
+def _load_manifest(data_dir: str, manifest_name: str = MANIFEST_NAME) -> list[dict]:
+    manifest_path = os.path.join(data_dir, manifest_name)
     if not os.path.isdir(data_dir):
         raise FileNotFoundError(
             f"Clip data directory not found: {data_dir!r}. "
@@ -41,7 +41,7 @@ def _load_manifest(data_dir: str) -> list[dict]:
         )
     if not os.path.isfile(manifest_path):
         raise FileNotFoundError(
-            f"No {MANIFEST_NAME} in {data_dir!r}. "
+            f"No {manifest_name} in {data_dir!r}. "
             "Expected a FolderClipDataset directory built by "
             "scripts/prepare_clips.py (one .npy clip + manifest.jsonl per clip)."
         )
@@ -84,12 +84,13 @@ class FolderClipDataset(Dataset):
         width: int = 64,
         max_clips: int | None = None,
         shard: tuple[int, int] | None = None,
+        manifest_name: str = MANIFEST_NAME,
     ):
         self.data_dir = data_dir
         self.frames = frames
         self.height = height
         self.width = width
-        entries = _load_manifest(data_dir)
+        entries = _load_manifest(data_dir, manifest_name)
         if max_clips is not None:
             entries = entries[: max(0, int(max_clips))]
         if shard is not None:

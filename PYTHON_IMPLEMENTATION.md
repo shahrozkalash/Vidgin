@@ -42,6 +42,9 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector (Pixabay/Pexels) → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
 | `scripts/harvest_urls.py` | Part 1 | No-API-key URL harvester (stdlib only): fetches stock search pages with a browser User-Agent and extracts direct `.mp4` file URLs from the embedded HTML (Pexels: `videos.pexels.com/video-files/<id>/<id>-<variant>.mp4`, pagination via `?page=N`, one sd variant per video; Pixabay: optional secondary source, `_tiny`→`_medium` suffix swap kept only when HEAD returns 200). Pure-function parsing (`extract_pexels_urls`, `choose_variant`) unit-tested without network. Writes `urls.txt` for `prepare_clips.py --source urls` |
 | `scripts/caption_clips.py` | Part 1/5 | 100% Free Tier Gemini vision captioner for prepared clips: replaces weak file/tag captions with dense 15-30 word scene descriptions (subject, action, setting, camera move, lighting); 3 frames resized to ≤512px; paced at 6s with `--max-calls` cap (default 240); graceful HTTP 429 quota handling; resume-safe atomic updates |
+| `vidgen/data/dataset_tools.py` | Part 1 | Local dataset health + packing logic: memory-mapped clip/depth validation (missing, corrupt, dtype/shape, dark-sample, duplicate-reference, orphan checks) and verified multi-folder packing with collision-proof prefixed names and staged publish |
+| `scripts/vidgin_helper.py` | Part 1/5 | Helper bundle CLI with three commands: `captions` (delegates to the free-tier captioner), `check` (trainer-readiness report, optional JSON), and `pack` (merge prepared groups into one verified training dataset) |
+| `tests/test_helper_bundle.py` | Part 1/5 | Helper coverage: clean and damaged dataset reports, depth mismatch, orphans/duplicates, same-name chunk packing, bad-source/mixed-shape/non-empty-output refusal, CLI exit codes, and caption delegation |
 | `vidgen/audio/` | Audio | Vidgin's own audio brain: `mel.py` (22050 Hz / 80 mels), `sound_model.py` (~71M Audio DiT), `vocoder.py` (~2.6M HiFi-GAN), `voice_model.py` (~11.4M Voice TTS). 100% in-repo code, zero external models, zero downloaded weights |
 | `scripts/prepare_audio_data.py` | Audio | Prepares training data from FREE, no-key public sources: LJSpeech-1.1 (Public Domain / CC0) for voice; ESC-50 and UrbanSound8K subsets (CC-BY-NC 3.0) for sound; synthetic CPU generator |
 | `scripts/train_audio.py` | Audio | Unified trainer adhering to `vidgen/train.py` conventions (--target sound, voice, vocoder); bit-for-bit resume, AdamW, RNG state saving |
@@ -631,6 +634,74 @@ python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/ti
 ```
 
 Tests: `tests/test_caption_clips.py` (12 tests) verifies frame extraction, resizing, manifest updates, depth key preservation, resume-skip, overwrite, pacing stop, 429 quota handling, and API key prompts using a mocked client.
+
+## Helper bundle (`scripts/vidgin_helper.py`) — 2026-10-22
+
+The helper bundle puts the everyday dataset jobs behind one small tool.
+It does not train a model and does not add any external brain to Vidgin:
+the caption command reuses the existing free-tier Gemini captioner only
+to write training labels, while `check` and `pack` are fully local.
+
+```bash
+# 1. Write proper captions (same free-tier rules as caption_clips.py)
+python scripts/vidgin_helper.py captions --data-dir /path/to/clips
+
+# 2. Check a folder before training: missing/corrupt files, wrong
+#    dtype or shape, too-dark samples, missing/mismatched depth maps,
+#    duplicate manifest references, and orphan files. Arrays are
+#    memory-mapped, so checking a 256x256 dataset does not load whole
+#    clips into RAM. Add --json report.json for a machine-readable copy.
+python scripts/vidgin_helper.py check /path/to/clips \
+    --frames 33 --height 256 --width 256 --require-depth
+
+# 3. Merge finished groups into one dataset. Every source is checked
+#    first; file names get group prefixes so two folders that both
+#    contain clip_000001.npy cannot overwrite each other. The pack is
+#    built in a staging folder and verified before it is published.
+python scripts/vidgin_helper.py pack /path/to/group1 /path/to/group2 \
+    --labels group1,group2 --out /path/to/training-dataset
+```
+
+`check` exits 0 only when there are no error-level problems (warnings
+such as a dark clip are printed but do not fail the command unless
+`--strict` is used). `pack` refuses a damaged source, sources with
+different clip shapes, and a non-empty output directory unless
+`--overwrite` is explicitly given.
+
+Tests: `tests/test_helper_bundle.py` (8 tests) covers the clean/damaged
+reports, same-name chunk packing, refusal cases, CLI exit codes, and
+caption delegation.
+
+### Dataset splits + no silent synthetic fallback — 2026-10-22
+
+Phase 1 of the targeted improvement programme (Dawood's decision:
+keep Vidgin 100% its own model, improve its weakest parts):
+
+```bash
+# 4. Deterministic train/val/test split manifests inside a dataset.
+#    Clips sharing a manifest "group"/"source"/"source_url" field stay
+#    in ONE split (no source leakage); same seed = same split.
+python scripts/vidgin_helper.py split /path/to/training-dataset \
+    --ratios 0.8,0.1,0.1 --seed 1234
+
+# Train on one split; --require-real makes a missing --data-dir a loud
+# error instead of a silent synthetic Moving MNIST run.
+python -m vidgen.train_vae --preset small --data-dir /path/to/training-dataset \
+    --data-split train --require-real ...
+python -m vidgen.train --preset small --data-dir /path/to/training-dataset \
+    --data-split train --require-real ...
+```
+
+`make_splits` (in `vidgen/data/dataset_tools.py`) writes
+`manifest_train.jsonl` / `manifest_val.jsonl` / `manifest_test.jsonl`
+plus `splits.json` into the dataset directory; `FolderClipDataset`
+gained a `manifest_name` parameter and both trainers a `--data-split`
+option to consume them. Without `--data-dir`, both trainers now print
+a loud warning that the run is synthetic smoke-only, and
+`--require-real` turns that fallback into an error. Tests:
+`tests/test_helper_bundle.py` split tests (grouped, deterministic,
+disjoint, consumed by the dataset, CLI wiring, `--require-real` guard
+in both trainers).
 
 ## Vidgin's own audio brain (`vidgen/audio/`)
 
