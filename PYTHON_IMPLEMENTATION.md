@@ -29,6 +29,9 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → Small VAE; VAE arch is preset-independent); DDP multi-GPU under `torchrun` |
 | `vidgen/distributed.py` | Part 7 | DDP helpers: torchrun env init (nccl on CUDA / gloo on CPU, no-op single-process fallback), per-rank device selection, barrier/destroy, `unwrap_model` / `plain_state_dict` (checkpoints never carry `module.` prefixes), per-rank seed derivation, global-batch sharding, explicit gradient sync for the unwrapped text encoder |
 | `tests/test_distributed.py` | Part 7 | Helper unit tests (fallback, env parsing, seed/shard math, plain state dicts), proof single-process trainers are unwrapped/unsharded, and simulated 2-rank tests: disjoint clip slices, divergent-but-deterministic RNG streams, rank-1 writes no checkpoint |
+| `vidgen/grow.py` | Part 7 | Model growth ("small brains first"): transplants a trained DiT's weights into a LARGER preset — head-aware width expansion, endpoint-preserving depth layer mapping, AdaLN chunk alignment, legacy→transformer text-embedding transplant; output is a weights-only checkpoint loadable via `train.py --init-weights`. See the Model growth section |
+| `scripts/grow_checkpoint.py` | Part 7 | Growth CLI: donor DiT checkpoint + `--to <preset>` → grown weights-only checkpoint, with a transplant report (params carried vs fresh) |
+| `tests/test_grow.py` | Part 7 | Growth coverage: layer/head mapping exactness, strict load into the target architecture, modulation chunk alignment, text transfer paths incl. word-bucket placement, payload validation, CLI + trainer `--init-weights` acceptance on the real tiny→small hop |
 | `vidgen/pool.py` | Part 7 | Weight-averaging pool (DiLoCo-style) primitives: `--data-shard K/N` parsing + position math, checkpoint merge (float-only averaging in float64, optional outer step against the round-start base), strict compatibility verification (kind/preset/config/step/keys/shapes), RNG-side-effect-free payload loading |
 | `scripts/average_checkpoints.py` | Part 7 | Coordinator merge tool: 2+ same-round worker checkpoints → one pooled weights-only checkpoint (no optimizer/sampler/RNG state; `pool` metadata records inputs/base/outer-lr) |
 | `scripts/pool_status.py` | Part 7 | Coordinator inbox report: per-file kind/preset/step + merge-ready groups (same kind, preset, step) with the exact merge command |
@@ -399,6 +402,74 @@ numbering at step 24 and trained 12 more steps, loss 0.7803 → 0.4962,
 all finite. Merge math, every mismatch rejection, shard partitioning
 and both trainers' round plumbing are unit-covered in
 `tests/test_pool.py` (13 tests).
+
+## Model growth (small brains first) — 2026-10-22
+
+The ladder's transfer mechanism: when a smaller model finishes
+training, the next size up does not start from random weights.
+`vidgen/grow.py` transplants the trained DiT's weights into the
+larger preset's geometry and `scripts/grow_checkpoint.py` wraps it as
+a CLI; the output is a weights-only checkpoint (with a `grow`
+metadata block) that trains as a fresh run via the existing flag:
+
+```
+python scripts/grow_checkpoint.py checkpoints/small/latest.pt \
+    --to vidgen480p --out checkpoints/grown_480p.pt
+python -m vidgen.train --preset vidgen480p \
+    --init-weights checkpoints/grown_480p.pt --vae-ckpt <vae ckpt> ...
+```
+
+How the transplant works:
+
+- **Width** — every weight lands at its semantically correct
+  position. Attention projections expand *head-aware*: target head h
+  inherits the full q/k/v slice of source head `h * Hs // Ht` (a naive
+  top-left copy would mix heads). In each matrix the (old outputs) ×
+  (new inputs) block is zeroed, so transplanted outputs do not read
+  brand-new inputs at step 0; remaining new capacity is initialized
+  like a fresh model (PyTorch defaults; the architecture's zero-init
+  parts — AdaLN modulation, depth stem — stay zero).
+- **Depth** — target block i inherits source block
+  `round(i * (Ls-1) / (Lt-1))`: the source stack stretches evenly,
+  first→first and last→last. AdaLN projections expand per modulation
+  chunk (9 shared / 2 final), never as a flat matrix.
+- **Text** — legacy→legacy and transformer→transformer grow by the
+  same rules. Legacy→transformer (Small/480p → 9B/14B) transplants
+  only the word embeddings: each known word is written into the
+  bucket the transformer's word-hash tokenizer assigns it (27 words,
+  0 collisions for the current vocab); the transformer stack starts
+  fresh. Transformer→legacy is rejected as a downgrade.
+- **Depth conditioning** is inherited from the source config; the
+  CLI's `--depth` adds a fresh zero-init stem to a plain source.
+- The **VAE** needs no growth: one identical architecture at every
+  size, transferred exactly by `train_vae.py --init-weights`.
+
+Honest limits: the grown model does not reproduce the source's
+function (LayerNorm statistics, token grid and RoPE geometry all
+change with size); every learned weight lands in the slot with the
+same meaning and the new capacity starts at fresh-model scale. The
+big model still trains — growth is a head start, not an education.
+Same-geometry "growth" is refused (use the checkpoint directly).
+Unit coverage in `tests/test_grow.py` (14 tests): mapping exactness,
+strict loads, forward finiteness, all text paths, determinism, and
+the real tiny→small CLI + trainer-acceptance path.
+
+CPU proof (2026-10-22, this VM): a Tiny donor trained 30 steps
+(Moving MNIST, loss 1.3067 → 0.4183) was grown to Small —
+71,905,217 of Small's 285,943,617 DiT+text params (25.1%) are
+transplanted values, the rest fresh capacity. Fair race (fresh Small
+vs grown Small, identical batches/noise via a common re-seed before
+stepping): **first-step loss 1.3970 fresh vs 0.7677 grown — the grown
+model starts 45% lower**, i.e. the donor's learning demonstrably
+carried into the bigger brain before it trained at all. Caveat, also
+measured: at the default lr 1e-4 the grown model's second step
+jumped to 2.1555 (Adam's first full-size step disturbs the
+transplant); re-run at lr 2e-5 the grown model held its lead
+(step 2: 0.9989, still ahead of fresh's 1.2050). Prescription —
+recorded in every grown checkpoint's `grow` metadata: start a grown
+model at ~1/5 of the from-scratch learning rate for its first
+phase. Proof artifacts: `~/workspace/tmp/grow_proof/` (donor, grown
+checkpoint, JSON).
 
 ## What remains GPU/cluster-only (from GPU_CHECKLIST.md)
 
