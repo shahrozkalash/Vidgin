@@ -99,7 +99,13 @@ def _trust_hub_repo(owner_repo: str) -> None:
     swallowed.
     """
     try:
-        path = os.path.join(torch.hub.get_dir(), "trusted_list")
+        hub_dir = torch.hub.get_dir()
+        # Fresh sessions (Kaggle/Colab, seen 2026-10-22) have no hub dir at
+        # all -- without makedirs the append below raises FileNotFoundError
+        # and the trust silently never lands, so the next torch.hub.load
+        # hangs on its interactive prompt instead.
+        os.makedirs(hub_dir, exist_ok=True)
+        path = os.path.join(hub_dir, "trusted_list")
         existing = ""
         if os.path.exists(path):
             with open(path) as f:
