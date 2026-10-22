@@ -46,6 +46,9 @@ from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
+from vidgen.train_utils import (
+    amp_context, build_lr_scheduler, make_grad_scaler, validate_train_options,
+)
 from vidgen.vae.model import CausalVAE, vae_loss
 
 
@@ -56,6 +59,11 @@ class VAETrainer:
                  log_path: str | None = None, data_dir: str | None = None,
                  data_shard: tuple[int, int] | None = None,
                  data_split: str | None = None,
+                 warmup_steps: int | None = None,
+                 lr_schedule: str | None = None,
+                 total_steps: int | None = None,
+                 grad_accum: int | None = None,
+                 amp: str | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -78,6 +86,27 @@ class VAETrainer:
 
         self.vae = CausalVAE().to(self.device)
         self.opt = torch.optim.AdamW(self.vae.parameters(), lr=lr)
+        # Phase 4/5 (shared with the DiT trainer via vidgen.train_utils):
+        # LR schedule, AMP, gradient accumulation — defaults reproduce
+        # the historical behaviour; resolved options are recorded in
+        # every checkpoint's train_config and restored on resume.
+        self.grad_accum = 1 if grad_accum is None else int(grad_accum)
+        self.amp = "none" if amp is None else amp
+        validate_train_options(self.grad_accum, self.amp)
+        self.warmup_steps = 0 if warmup_steps is None else int(warmup_steps)
+        self.lr_schedule = "none" if lr_schedule is None else lr_schedule
+        self.total_steps = total_steps
+        self.sched = build_lr_scheduler(
+            self.opt, warmup_steps=self.warmup_steps,
+            total_steps=self.total_steps, schedule=self.lr_schedule)
+        self.scaler = make_grad_scaler(self.device, self.amp)
+        self.train_config = {
+            "warmup_steps": self.warmup_steps,
+            "lr_schedule": self.lr_schedule,
+            "total_steps": self.total_steps,
+            "grad_accum": self.grad_accum,
+            "amp": self.amp,
+        }
         # Optional pool worker shard (vidgen/pool.py): this worker trains
         # only on its disjoint slice of the dataset. None = full dataset,
         # the original behavior exactly.
@@ -128,17 +157,44 @@ class VAETrainer:
         return shard_batch(global_batch, self.batch_size, self.rank)
 
     def train_step(self) -> dict:
-        batch_idx = self._next_batch_idx()
-        clips = torch.stack([self.dataset[i][0] for i in batch_idx]).to(self.device)
-        recon, mu, logvar, kl = self.vae(clips)
-        loss, recon_loss, kl_term = vae_loss(recon, clips, kl, self.kl_weight)
+        import time
+
+        t0 = time.perf_counter()
         self.opt.zero_grad()
-        loss.backward()
+        total_loss = 0.0
+        last_recon = last_kl = 0.0
+        last_batch = 0
+        for _micro in range(self.grad_accum):
+            batch_idx = self._next_batch_idx()
+            last_batch = len(batch_idx)
+            clips = torch.stack([self.dataset[i][0] for i in batch_idx]).to(self.device)
+            with amp_context(self.device, self.amp):
+                recon, mu, logvar, kl = self.vae(clips)
+                loss, recon_loss, kl_term = vae_loss(recon, clips, kl, self.kl_weight)
+            scaled = loss / self.grad_accum
+            if self.scaler is not None:
+                self.scaler.scale(scaled).backward()
+            else:
+                scaled.backward()
+            total_loss += float(loss.detach())
+            last_recon, last_kl = float(recon_loss.detach()), float(kl_term.detach())
+        if self.scaler is not None:
+            self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(self.vae.parameters(), 1.0)
-        self.opt.step()
-        rec = {"step": self.step, "loss": float(loss.detach()),
-               "recon": float(recon_loss.detach()), "kl": float(kl_term.detach()),
-               "lr": self.opt.param_groups[0]["lr"], "grad_norm": float(grad_norm)}
+        if self.scaler is not None:
+            self.scaler.step(self.opt)
+            self.scaler.update()
+        else:
+            self.opt.step()
+        if self.sched is not None:
+            self.sched.step()
+        secs = time.perf_counter() - t0
+        samples = last_batch * self.world_size * self.grad_accum
+        rec = {"step": self.step, "loss": total_loss / self.grad_accum,
+               "recon": last_recon, "kl": last_kl,
+               "lr": self.opt.param_groups[0]["lr"], "grad_norm": float(grad_norm),
+               "secs": round(secs, 3),
+               "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
         self.loss_history.append(rec["loss"])
         if self.logger:
             self.logger.log(rec)
@@ -146,7 +202,7 @@ class VAETrainer:
         return rec
 
     def state_dict(self) -> dict:
-        return {
+        payload = {
             "kind": "vae",
             "preset": self.cfg.name,
             "step": self.step,
@@ -155,13 +211,29 @@ class VAETrainer:
             "sampler": self.sampler.state_dict(),
             "loss_history": self.loss_history,
             "config": self.cfg.to_dict(),
+            "train_config": dict(self.train_config),
         }
+        if self.sched is not None:
+            payload["sched"] = self.sched.state_dict()
+        if self.scaler is not None:
+            payload["scaler"] = self.scaler.state_dict()
+        return payload
 
     def load_state_dict(self, payload: dict) -> None:
         assert payload["kind"] == "vae"
         # Loads go into the UNWRAPPED module: keys are plain either way.
         unwrap_model(self.vae).load_state_dict(payload["vae"])
         self.opt.load_state_dict(payload["opt"])
+        if "sched" in payload:
+            if self.sched is None:
+                raise ValueError(
+                    "checkpoint carries LR-scheduler state but this "
+                    "trainer was built without the run's schedule; "
+                    "resume via VAETrainer.resume so the schedule is "
+                    "restored from train_config")
+            self.sched.load_state_dict(payload["sched"])
+        if "scaler" in payload and self.scaler is not None:
+            self.scaler.load_state_dict(payload["scaler"])
         self.sampler.load_state_dict(payload["sampler"])
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
@@ -208,6 +280,11 @@ class VAETrainer:
 
         payload = load_checkpoint(path)
         kwargs.pop("preset", None)  # preset always comes from the checkpoint
+        stored_tc = payload.get("train_config") or {}
+        for key in ("warmup_steps", "lr_schedule", "total_steps",
+                    "grad_accum", "amp"):
+            if kwargs.get(key) is None and key in stored_tc:
+                kwargs[key] = stored_tc[key]
         tr = cls(preset=payload["preset"], **kwargs)
         tr.load_state_dict(payload)
         set_rng_states(payload["rng"])  # restore saved RNG state after fresh init
@@ -270,6 +347,18 @@ def main() -> None:
                     help="fail loudly unless --data-dir names a real-clip "
                          "dataset: never silently train on synthetic "
                          "Moving MNIST when real training was requested")
+    ap.add_argument("--warmup-steps", type=int, default=None,
+                    help="linear LR warmup over this many steps (default 0)")
+    ap.add_argument("--lr-schedule", default=None,
+                    choices=["none", "cosine", "linear"],
+                    help="LR decay after warmup, over --steps (default "
+                         "none = constant). On --resume the checkpoint's "
+                         "stored schedule wins unless overridden.")
+    ap.add_argument("--grad-accum", type=int, default=None,
+                    help="micro-batches accumulated per optimizer step "
+                         "(default 1)")
+    ap.add_argument("--amp", default=None, choices=["none", "bf16", "fp16"],
+                    help="mixed precision via autocast (default none)")
     args = ap.parse_args()
 
     if args.resume and args.init_weights:
@@ -300,7 +389,11 @@ def main() -> None:
                 num_clips=args.num_clips, device=args.device,
                 ckpt_dir=args.ckpt_dir, log_path=args.log,
                 data_dir=args.data_dir, data_shard=args.data_shard,
-                data_split=args.data_split, dist_info=dist_info)
+                data_split=args.data_split,
+                warmup_steps=args.warmup_steps,
+                lr_schedule=args.lr_schedule,
+                grad_accum=args.grad_accum, amp=args.amp,
+                dist_info=dist_info)
             if main_rank:
                 print(f"resumed from {args.resume} at step {tr.step}")
         else:
@@ -310,7 +403,12 @@ def main() -> None:
                             num_clips=args.num_clips, device=args.device,
                             ckpt_dir=args.ckpt_dir, log_path=args.log,
                             data_dir=args.data_dir, data_shard=args.data_shard,
-                            data_split=args.data_split, dist_info=dist_info)
+                            data_split=args.data_split,
+                            warmup_steps=args.warmup_steps,
+                            lr_schedule=args.lr_schedule,
+                            total_steps=args.steps,
+                            grad_accum=args.grad_accum, amp=args.amp,
+                            dist_info=dist_info)
             if args.init_weights:
                 tr.load_vae_weights(args.init_weights,
                                     start_step=args.start_step)

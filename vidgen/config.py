@@ -42,6 +42,11 @@ class VidgenConfig:
     text_heads: int = 8         # attention heads inside the transformer encoder
     text_ffn: int = 0           # encoder MLP width (0 = 4 * text_dim)
     text_vocab_size: int = 8192  # word-hash buckets for the transformer encoder
+    text_tokenizer: str = "hash"  # "hash" = legacy word-hash / fixed-table
+                                # tokenization (every existing checkpoint);
+                                # "caption" = CaptionTokenizer trained on the
+                                # dataset's own captions (Phase 2, 2026-10-22),
+                                # stored inside the checkpoint itself.
     latent_scale: float = 1.0   # fixed latent normalizer (SD-style); applied in train
     target_params_m: float = 20.0  # documented preset size (millions), sanity only
     use_depth: bool = False     # Dawood's 3D idea: depth-map conditioning (vidgen/depth.py).

@@ -703,6 +703,122 @@ a loud warning that the run is synthetic smoke-only, and
 disjoint, consumed by the dataset, CLI wiring, `--require-real` guard
 in both trainers).
 
+### Caption-trained tokenizer (Phase 2) — 2026-10-22
+
+The text encoders used to tokenize lossily: the legacy encoder's fixed
+27-word table mapped every other word to `<unk>`, and the flagship
+transformer hashed words with crc32 into 8,192 buckets (distinct words
+could collide into one bucket). `vidgen/text/tokenizer.py` adds
+`CaptionTokenizer`: a word-level vocabulary **trained on the dataset's
+own captions** — deterministic (frequency order, alphabetical ties),
+with `<pad>/<unk>/<bos>/<eos>` specials, JSON save/load, and an
+`audit_hash_collisions` helper that counts how many distinctions the
+old hash scheme collapses for a given vocabulary.
+
+```bash
+# Build the vocabulary from a prepared dataset's captions.
+python scripts/build_tokenizer.py --data-dir /path/to/dataset \
+    --out /path/to/tokenizer.json
+
+# Train with it (both encoders accept it; the mode is recorded in the
+# checkpoint config as text_tokenizer="caption").
+python -m vidgen.train --preset small --data-dir /path/to/dataset \
+    --tokenizer-vocab /path/to/tokenizer.json ...
+```
+
+The tokenizer is **stored inside every checkpoint** (`"tokenizer"`
+payload key): resume rebuilds it from the checkpoint, `sample.py`
+rebuilds it for inference, and loading weights across tokenizers (or
+across hash/caption modes) fails with a clear `ValueError` instead of
+a shape error or silent corruption. Hash mode remains the default, so
+every existing checkpoint behaves exactly as before. Honest limits: a
+tokenizer only gives the encoder distinct symbols — word *meaning* is
+still learned during training, unseen words stay `<unk>`, the DiT
+grow tool refuses caption-mode encoders (ids are vocabulary positions,
+not hash buckets), and pool merging of caption-mode checkpoints is not
+yet supported (the merged payload would lack the tokenizer, and
+resume then refuses it loudly). Tests: `tests/test_tokenizer.py`
+(18 tests).
+
+### Measured latent scale + VAE quality gate (Phase 3) — 2026-10-22
+
+`latent_scale` used to be a hand-set 1.0 that was never measured.
+`vidgen/vae/stats.py` now measures the trained VAE's actual latent
+distribution (per-channel and global mean/std, streaming over the
+dataset) plus reconstruction quality (MSE / PSNR of decode(encode(x))),
+and `scripts/measure_latents.py` turns that into a report, optional
+input-vs-reconstruction preview PNGs, and a pass/fail PSNR gate:
+
+```bash
+# After VAE training, BEFORE DiT training:
+python scripts/measure_latents.py --vae-ckpt /path/to/vae.pt \
+    --preset small --data-dir /path/to/dataset --max-clips 200 \
+    --out latent_report.json --preview-dir previews --min-psnr 15
+
+# Train the DiT with the measured value (stored in the checkpoint
+# config; resume restores it, sampling inherits it):
+python -m vidgen.train --preset small --data-dir /path/to/dataset \
+    --vae-ckpt /path/to/vae.pt --latent-scale <recommended> ...
+```
+
+First real measurement (tool proof, 2026-10-22): the Round 1 VAE
+measured over Moving MNIST clips gives global latent std 1.686, i.e.
+a recommended scale of **0.593, not 1.0** — the hand-set value was
+indeed wrong; the number that matters must be measured on each run's
+own dataset with that run's VAE (the Stage 2 runbook does this on the
+assembled dataset before DiT training). Tests:
+`tests/test_latent_stats.py` (3 tests).
+
+### Training efficiency: schedules, AMP, accumulation (Phases 4/5) — 2026-10-22
+
+Both trainers share `vidgen/train_utils.py`:
+
+- **LR warmup + schedule** — `--warmup-steps N`, `--lr-schedule
+  {none,cosine,linear}`. Cosine/linear decay over the run's `--steps`
+  (a schedule without a horizon is an error, not a silent change);
+  cosine floors at 5% of peak. Default stays constant LR.
+- **Mixed precision** — `--amp {none,bf16,fp16}` wraps the forward in
+  autocast; fp16 on CUDA adds a GradScaler (saved/restored in
+  checkpoints). Default off.
+- **Gradient accumulation** — `--grad-accum N` runs N micro-batches
+  per optimizer step (loss scaled 1/N, sync/clip/step once), raising
+  the effective batch without raising peak memory.
+- **Throughput logging** — every step record now carries `secs` and
+  `clips_per_sec` alongside loss/lr/grad_norm.
+
+The resolved options are stored in each checkpoint's `train_config`
+(and scheduler/scaler state alongside); resume restores them from the
+checkpoint unless explicitly overridden on the command line. Defaults
+reproduce the historical behaviour exactly — old checkpoints carry no
+`sched`/`scaler` keys and load as before. Tests:
+`tests/test_train_utils.py` (5 tests).
+
+### Evaluation suite + MP4 export (Phases 6/7) — 2026-10-22
+
+Falling loss alone never proved quality. `vidgen/evaluate.py` adds
+non-learned pixel metrics (no pretrained evaluator — ownership rule):
+motion (mean abs frame diff; 0 = frozen), flicker (brightness
+second-difference), sharpness (gradient magnitude), diversity across
+prompts/seeds (near 0 = mode collapse), and a memorization check
+(nearest-training-clip distance; near 0 = copying). Prompt adherence
+is honestly **not scored** — it needs a learned evaluator or human
+review of the saved videos.
+
+```bash
+python scripts/evaluate_checkpoint.py \
+    --dit-ckpt /path/to/dit.pt --vae-ckpt /path/to/vae.pt \
+    --baseline /path/to/old_dit.pt --train-dir /path/to/dataset \
+    --out-dir /path/to/eval_out
+```
+
+Fixed prompts/seeds/settings are used for every checkpoint; each
+generation is saved as a verified MP4 (`vidgen/video_io.py`, OpenCV
+with an ffmpeg fallback, frame count re-checked after writing) next
+to a `report.json`/`report.md` comparing baseline vs candidate.
+`sample.py` outputs now include an MP4 alongside the npy/PNG/GIF.
+Tests: `tests/test_evaluate.py` (4 tests, including an end-to-end
+evaluation of a real tiny checkpoint).
+
 ## Vidgin's own audio brain (`vidgen/audio/`)
 
 Vidgin generates silent video. Rather than relying on external APIs, closed services, or third-party pretrained weights, Vidgin incorporates its **OWN audio brain**, engineered directly inside this repository, so generated videos gain background sound and a speaking voice that are 100% Vidgin's.

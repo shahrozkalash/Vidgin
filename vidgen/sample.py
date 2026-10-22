@@ -24,6 +24,7 @@ from vidgen.extend import generate_long, new_frames_per_segment, segments_for_se
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
+from vidgen.text.tokenizer import CaptionTokenizer
 from vidgen.vae.model import CausalVAE
 
 
@@ -39,6 +40,14 @@ def save_frames(frames: np.ndarray, outdir: str, duration_ms: int = 62) -> dict:
     npy_path = os.path.join(outdir, "frames.npy")
     np.save(npy_path, frames)
     out["npy"] = npy_path
+    try:
+        from vidgen.video_io import write_mp4
+
+        fps = max(1.0, round(1000.0 / max(duration_ms, 1)))
+        out["mp4"] = write_mp4(frames, os.path.join(outdir, "clip.mp4"),
+                               fps=fps)
+    except Exception as exc:  # MP4 is an export nicety, never fatal
+        print(f"MP4 export skipped ({exc}); npy/PNG/GIF still written")
     try:
         from PIL import Image
 
@@ -106,7 +115,16 @@ def main() -> None:
     if args.vae_ckpt or payload.get("vae_ckpt"):
         vp = load_checkpoint(args.vae_ckpt or payload["vae_ckpt"], map_location=device)
         vae.load_state_dict(vp["vae"])
-    text_enc = build_text_encoder(cfg).to(device)
+    # Phase 2: caption-mode checkpoints carry their exact tokenizer;
+    # inference must tokenize exactly as training did.
+    sample_tokenizer = (CaptionTokenizer.from_dict(payload["tokenizer"])
+                        if payload.get("tokenizer") is not None else None)
+    if getattr(cfg, "text_tokenizer", "hash") == "caption" and sample_tokenizer is None:
+        raise SystemExit(
+            "this checkpoint was trained with a caption tokenizer but "
+            "carries no 'tokenizer' payload; it is incomplete and "
+            "cannot be sampled safely")
+    text_enc = build_text_encoder(cfg, tokenizer=sample_tokenizer).to(device)
     dit = DiT(cfg).to(device)
     dit.load_state_dict(payload["dit"])
     text_enc.load_state_dict(payload["text_enc"])

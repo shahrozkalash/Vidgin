@@ -331,6 +331,13 @@ def grow_text_state_dict(src_sd: dict, src_cfg: VidgenConfig,
     embeddings (into their word-hash buckets); transformer -> legacy
     is a downgrade and is rejected.
     """
+    if getattr(src_cfg, "text_tokenizer", "hash") == "caption" or \
+            getattr(tgt_cfg, "text_tokenizer", "hash") == "caption":
+        raise ValueError(
+            "growing caption-tokenizer text encoders is not supported: "
+            "token ids are vocabulary positions, not hash buckets, so "
+            "the transplant rules do not apply. Grow in hash mode, or "
+            "train the target with its own tokenizer from scratch.")
     src_transformer = getattr(src_cfg, "text_layers", 0) > 0
     tgt_transformer = getattr(tgt_cfg, "text_layers", 0) > 0
     if src_transformer and not tgt_transformer:

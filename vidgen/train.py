@@ -52,6 +52,10 @@ from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
+from vidgen.text.tokenizer import CaptionTokenizer
+from vidgen.train_utils import (
+    amp_context, build_lr_scheduler, make_grad_scaler, validate_train_options,
+)
 from vidgen.dit.model import DiT
 from vidgen.vae.model import CausalVAE
 
@@ -66,6 +70,13 @@ class DiTTrainer:
                  use_depth: bool = False, depth_dropout: float = 0.1,
                  data_shard: tuple[int, int] | None = None,
                  data_split: str | None = None,
+                 tokenizer: CaptionTokenizer | None = None,
+                 latent_scale: float | None = None,
+                 warmup_steps: int | None = None,
+                 lr_schedule: str | None = None,
+                 total_steps: int | None = None,
+                 grad_accum: int | None = None,
+                 amp: str | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -100,12 +111,48 @@ class DiTTrainer:
         self.vae.eval()
         for p in self.vae.parameters():
             p.requires_grad_(False)
-        self.text_enc = build_text_encoder(self.cfg).to(self.device)
+        # Phase 2: a supplied CaptionTokenizer switches the run into
+        # caption-tokenizer mode; the tokenizer is stored in every
+        # checkpoint so resume/inference rebuild it exactly.
+        self.tokenizer = tokenizer
+        if tokenizer is not None:
+            self.cfg.text_tokenizer = "caption"
+        # Phase 3: latent_scale comes from MEASURING the trained VAE on
+        # the target dataset (scripts/measure_latents.py), never a
+        # hand-wave. Stored in the checkpoint config, so sampling and
+        # continuation inherit it automatically.
+        if latent_scale is not None:
+            if latent_scale <= 0:
+                raise ValueError(f"latent_scale must be positive, got {latent_scale}")
+            self.cfg.latent_scale = float(latent_scale)
+        self.text_enc = build_text_encoder(self.cfg, tokenizer=tokenizer).to(self.device)
         self.dit = DiT(self.cfg).to(self.device)
         if grad_checkpoint:
             self.dit.set_grad_checkpoint(True)
         params = list(self.dit.parameters()) + list(self.text_enc.parameters())
         self.opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+
+        # Phase 4/5: LR schedule, AMP, gradient accumulation. Every
+        # option defaults to the historical behaviour (constant LR,
+        # fp32, accum 1); the resolved set is recorded in each
+        # checkpoint's train_config and restored on resume.
+        self.grad_accum = 1 if grad_accum is None else int(grad_accum)
+        self.amp = "none" if amp is None else amp
+        validate_train_options(self.grad_accum, self.amp)
+        self.warmup_steps = 0 if warmup_steps is None else int(warmup_steps)
+        self.lr_schedule = "none" if lr_schedule is None else lr_schedule
+        self.total_steps = total_steps
+        self.sched = build_lr_scheduler(
+            self.opt, warmup_steps=self.warmup_steps,
+            total_steps=self.total_steps, schedule=self.lr_schedule)
+        self.scaler = make_grad_scaler(self.device, self.amp)
+        self.train_config = {
+            "warmup_steps": self.warmup_steps,
+            "lr_schedule": self.lr_schedule,
+            "total_steps": self.total_steps,
+            "grad_accum": self.grad_accum,
+            "amp": self.amp,
+        }
 
         # Optional pool worker shard (vidgen/pool.py): this worker trains
         # only on its disjoint slice of the dataset. None = full dataset,
@@ -175,57 +222,87 @@ class DiTTrainer:
 
     # ------------------------------------------------------------ one step
     def train_step(self) -> dict:
-        batch_idx = self._next_batch_idx()
-        clips, captions = [], []
-        for i in batch_idx:
-            c, cap = self.dataset[i]
-            clips.append(c)
-            captions.append(cap)
-        x = torch.stack(clips).to(self.device)  # [B,3,T,H,W]
+        import time
 
-        with torch.no_grad():
-            mu, _ = self.vae.encode(x)
-            x1 = mu * self.cfg.latent_scale
-
-        b = x1.shape[0]
-        t = sample_shifted_logit_normal((b,), s=5.0, device=str(self.device))
-        xt, target = rectified_flow_targets(x1, t)
-
-        text, text_mask = self.text_enc(captions)
-        # 10% caption dropout -> CFG null embedding (uses torch RNG: checkpointed)
-        drop = (torch.rand(b, device=self.device) < self.cfg_dropout)
-        null_emb, null_mask = self.text_enc.null_embedding()
-        null_emb = null_emb.expand(b, -1, -1)
-        null_mask = null_mask.expand(b, -1)
-        text = torch.where(drop.view(b, 1, 1), null_emb, text)
-        text_mask = torch.where(drop.view(b, 1), null_mask, text_mask)
-
-        depth = self._depth_batch(batch_idx) if self.cfg.use_depth else None
-        pred = self.dit(xt, t, text, text_mask, depth=depth)
-        loss = flow_loss(pred, target)
-
+        t0 = time.perf_counter()
         self.opt.zero_grad()
-        loss.backward()
+        total_loss = 0.0
+        bin_mean = [0.0] * 10
+        last_batch = 0
+        for _micro in range(self.grad_accum):
+            batch_idx = self._next_batch_idx()
+            clips, captions = [], []
+            for i in batch_idx:
+                c, cap = self.dataset[i]
+                clips.append(c)
+                captions.append(cap)
+            x = torch.stack(clips).to(self.device)  # [B,3,T,H,W]
+
+            with torch.no_grad():
+                mu, _ = self.vae.encode(x)
+                x1 = mu * self.cfg.latent_scale
+
+            b = x1.shape[0]
+            last_batch = b
+            t = sample_shifted_logit_normal((b,), s=5.0, device=str(self.device))
+            xt, target = rectified_flow_targets(x1, t)
+
+            with amp_context(self.device, self.amp):
+                text, text_mask = self.text_enc(captions)
+                # 10% caption dropout -> CFG null embedding (torch RNG: checkpointed)
+                drop = (torch.rand(b, device=self.device) < self.cfg_dropout)
+                null_emb, null_mask = self.text_enc.null_embedding()
+                null_emb = null_emb.expand(b, -1, -1)
+                null_mask = null_mask.expand(b, -1)
+                text = torch.where(drop.view(b, 1, 1), null_emb, text)
+                text_mask = torch.where(drop.view(b, 1), null_mask, text_mask)
+
+                depth = self._depth_batch(batch_idx) if self.cfg.use_depth else None
+                pred = self.dit(xt, t, text, text_mask, depth=depth)
+                loss = flow_loss(pred, target)
+
+            scaled = loss / self.grad_accum
+            if self.scaler is not None:
+                self.scaler.scale(scaled).backward()
+            else:
+                scaled.backward()
+            total_loss += float(loss.detach())
+
+            if _micro == self.grad_accum - 1:
+                bins = timestep_bins(t)
+                bin_loss = torch.zeros(10, device=self.device)
+                bin_count = torch.zeros(10, device=self.device)
+                per = F.mse_loss(pred, target, reduction="none").mean(dim=(1, 2, 3, 4))
+                bin_loss.index_add_(0, bins, per.detach())
+                bin_count.index_add_(0, bins, torch.ones_like(per))
+                bin_mean = (bin_loss / bin_count.clamp_min(1)).tolist()
+
         # The DiT's gradients were all-reduced by DDP during backward;
         # the (unwrapped) text encoder's are synchronized explicitly so
-        # every rank clips and steps from identical gradients.
+        # every rank clips and steps from identical gradients. With
+        # accumulation the sync happens once, on the summed gradients —
+        # all-reduce is linear, so this equals per-micro syncing.
         sync_gradients(self.text_enc, self.dist_info)
+        if self.scaler is not None:
+            self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             list(self.dit.parameters()) + list(self.text_enc.parameters()), 1.0)
-        self.opt.step()
+        if self.scaler is not None:
+            self.scaler.step(self.opt)
+            self.scaler.update()
+        else:
+            self.opt.step()
+        if self.sched is not None:
+            self.sched.step()
 
-        bins = timestep_bins(t)
-        bin_loss = torch.zeros(10, device=self.device)
-        bin_count = torch.zeros(10, device=self.device)
-        per = F.mse_loss(pred, target, reduction="none").mean(dim=(1, 2, 3, 4))
-        bin_loss.index_add_(0, bins, per.detach())
-        bin_count.index_add_(0, bins, torch.ones_like(per))
-        bin_mean = (bin_loss / bin_count.clamp_min(1)).tolist()
-
-        rec = {"step": self.step, "loss": float(loss.detach()),
+        secs = time.perf_counter() - t0
+        samples = last_batch * self.world_size * self.grad_accum
+        rec = {"step": self.step, "loss": total_loss / self.grad_accum,
                "lr": self.opt.param_groups[0]["lr"],
                "grad_norm": float(grad_norm),
-               "bin_loss": [round(v, 5) for v in bin_mean]}
+               "bin_loss": [round(v, 5) for v in bin_mean],
+               "secs": round(secs, 3),
+               "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
         self.loss_history.append(rec["loss"])
         if self.logger:
             self.logger.log(rec)
@@ -261,7 +338,7 @@ class DiTTrainer:
 
     # ------------------------------------------------------------ checkpoint
     def state_dict(self) -> dict:
-        return {
+        payload = {
             "kind": "dit",
             "preset": self.cfg.name,
             "step": self.step,
@@ -272,6 +349,14 @@ class DiTTrainer:
             "loss_history": self.loss_history,
             "config": self.cfg.to_dict(),
         }
+        if self.tokenizer is not None:
+            payload["tokenizer"] = self.tokenizer.to_dict()
+        payload["train_config"] = dict(self.train_config)
+        if self.sched is not None:
+            payload["sched"] = self.sched.state_dict()
+        if self.scaler is not None:
+            payload["scaler"] = self.scaler.state_dict()
+        return payload
 
     def load_state_dict(self, payload: dict) -> None:
         assert payload["kind"] == "dit"
@@ -280,6 +365,16 @@ class DiTTrainer:
         unwrap_model(self.dit).load_state_dict(payload["dit"])
         unwrap_model(self.text_enc).load_state_dict(payload["text_enc"])
         self.opt.load_state_dict(payload["opt"])
+        if "sched" in payload:
+            if self.sched is None:
+                raise ValueError(
+                    "checkpoint carries LR-scheduler state but this "
+                    "trainer was built without the run's schedule; "
+                    "resume via DiTTrainer.resume so the schedule is "
+                    "restored from train_config")
+            self.sched.load_state_dict(payload["sched"])
+        if "scaler" in payload and self.scaler is not None:
+            self.scaler.load_state_dict(payload["scaler"])
         self.sampler.load_state_dict(payload["sampler"])
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
@@ -308,6 +403,26 @@ class DiTTrainer:
                 or "text_enc" not in payload:
             raise ValueError(
                 f"{path} is not a DiT checkpoint (kind={payload.get('kind')!r})")
+        # Tokenizer compatibility: a caption-tokenizer donor and a
+        # hash-mode (or differently-vocabularied) recipient must fail
+        # loudly here, not as a cryptic strict-load shape error.
+        donor_tok = payload.get("tokenizer")
+        if donor_tok is not None and self.tokenizer is None:
+            raise ValueError(
+                f"{path} was trained with a caption tokenizer "
+                f"({len(donor_tok['words'])} words); rebuild this trainer "
+                "with the same tokenizer (--tokenizer-vocab) before "
+                "loading its weights")
+        if donor_tok is None and self.tokenizer is not None:
+            raise ValueError(
+                f"{path} was trained in legacy hash mode but this "
+                "trainer uses a caption tokenizer; the two tokenizations "
+                "are incompatible")
+        if donor_tok is not None and self.tokenizer is not None \
+                and CaptionTokenizer.from_dict(donor_tok) != self.tokenizer:
+            raise ValueError(
+                f"{path} was trained with a DIFFERENT caption tokenizer "
+                "vocabulary; token ids would not mean the same words")
         # Strict loads into the UNWRAPPED modules (plain keys either way).
         unwrap_model(self.dit).load_state_dict(payload["dit"])
         self.text_enc.load_state_dict(payload["text_enc"])
@@ -338,7 +453,40 @@ class DiTTrainer:
         # one. The checkpoint's stored config is the source of truth.
         stored_cfg = payload.get("config") or {}
         kwargs["use_depth"] = bool(stored_cfg.get("use_depth", False))
+        # Tokenizer too: a caption-mode checkpoint carries its exact
+        # vocabulary; the text encoder must be built with it BEFORE the
+        # weights load. A conflicting --tokenizer-vocab is an error.
+        if payload.get("tokenizer") is not None:
+            stored_tok = CaptionTokenizer.from_dict(payload["tokenizer"])
+            given_tok = kwargs.get("tokenizer")
+            if given_tok is not None and given_tok != stored_tok:
+                raise ValueError(
+                    "the --tokenizer-vocab vocabulary differs from the "
+                    "tokenizer stored in the checkpoint; resume uses the "
+                    "checkpoint's own tokenizer")
+            kwargs["tokenizer"] = stored_tok
+        elif stored_cfg.get("text_tokenizer") == "caption":
+            raise ValueError(
+                "checkpoint config is caption-tokenizer mode but the "
+                "checkpoint carries no 'tokenizer' payload; it is "
+                "incomplete and cannot be resumed safely")
+        cli_scale = kwargs.pop("latent_scale", None)
+        # Training options (schedule/AMP/accumulation) are part of the
+        # run's identity: restore them from the checkpoint's
+        # train_config unless the caller explicitly overrode them.
+        stored_tc = payload.get("train_config") or {}
+        for key in ("warmup_steps", "lr_schedule", "total_steps",
+                    "grad_accum", "amp"):
+            if kwargs.get(key) is None and key in stored_tc:
+                kwargs[key] = stored_tc[key]
         tr = cls(preset=payload["preset"], **kwargs)  # fresh init reseeds RNG...
+        # The checkpoint's latent_scale is authoritative on resume (the
+        # preset default must not silently change the latent geometry);
+        # an explicit CLI --latent-scale wins, for deliberate re-scaling.
+        if cli_scale is not None:
+            tr.cfg.latent_scale = float(cli_scale)
+        elif stored_cfg.get("latent_scale") is not None:
+            tr.cfg.latent_scale = float(stored_cfg["latent_scale"])
         tr.load_state_dict(payload)
         set_rng_states(payload["rng"])  # ...so restore the saved RNG state last
         if tr.dist_info.is_distributed:
@@ -404,6 +552,18 @@ def main() -> None:
                     help="fail loudly unless --data-dir names a real-clip "
                          "dataset: never silently train on synthetic "
                          "Moving MNIST when real training was requested")
+    ap.add_argument("--tokenizer-vocab", default=None, metavar="PATH",
+                    help="CaptionTokenizer JSON built by "
+                         "scripts/build_tokenizer.py from the dataset's "
+                         "own captions; switches text conditioning to the "
+                         "caption-trained vocabulary (stored inside every "
+                         "checkpoint). Default: legacy hash/table mode.")
+    ap.add_argument("--latent-scale", type=float, default=None,
+                    help="latent normalizer applied to VAE mus before DiT "
+                         "training; use the value measured by "
+                         "scripts/measure_latents.py (1 / latent std). "
+                         "Default: the preset's value; stored in the "
+                         "checkpoint config either way.")
     ap.add_argument("--grad-checkpoint", action="store_true",
                     help="activation checkpointing for the DiT (needed to "
                          "train Small and larger presets in limited memory)")
@@ -413,6 +573,22 @@ def main() -> None:
                          "(prepared with prepare_clips.py --depth) is fed "
                          "to the DiT. On --resume the mode comes from the "
                          "checkpoint, not this flag.")
+    ap.add_argument("--warmup-steps", type=int, default=None,
+                    help="linear LR warmup over this many steps (default 0)")
+    ap.add_argument("--lr-schedule", default=None,
+                    choices=["none", "cosine", "linear"],
+                    help="LR decay schedule after warmup; cosine/linear "
+                         "decay over the run's --steps (default: none = "
+                         "constant LR). On --resume the schedule stored "
+                         "in the checkpoint wins unless overridden here.")
+    ap.add_argument("--grad-accum", type=int, default=None,
+                    help="accumulate this many micro-batches per optimizer "
+                         "step (default 1); raises the effective batch "
+                         "without raising peak memory")
+    ap.add_argument("--amp", default=None, choices=["none", "bf16", "fp16"],
+                    help="mixed precision via autocast (default none): "
+                         "bf16 suits modern GPUs, fp16 adds a GradScaler "
+                         "on CUDA")
     ap.add_argument("--depth-dropout", type=float, default=0.1,
                     help="probability of hiding a whole batch's depth maps "
                          "so text-only generation stays strong")
@@ -430,6 +606,8 @@ def main() -> None:
     if args.data_split and not args.data_dir:
         ap.error("--data-split needs --data-dir (splits live in the "
                  "real-clip dataset directory)")
+    cli_tokenizer = (CaptionTokenizer.load(args.tokenizer_vocab)
+                     if args.tokenizer_vocab else None)
     # Under torchrun this initializes the process group (nccl on CUDA,
     # gloo on CPU); without torchrun it is a no-op single-process info.
     dist_info = init_distributed(args.device)
@@ -447,6 +625,10 @@ def main() -> None:
                 device=args.device, ckpt_dir=args.ckpt_dir, log_path=args.log,
                 vae_ckpt=args.vae_ckpt, data_dir=args.data_dir,
                 data_shard=args.data_shard, data_split=args.data_split,
+                tokenizer=cli_tokenizer, latent_scale=args.latent_scale,
+                warmup_steps=args.warmup_steps,
+                lr_schedule=args.lr_schedule,
+                grad_accum=args.grad_accum, amp=args.amp,
                 dist_info=dist_info)
             if args.grad_checkpoint:
                 unwrap_model(tr.dit).set_grad_checkpoint(True)
@@ -471,6 +653,12 @@ def main() -> None:
                             log_path=args.log, vae_ckpt=args.vae_ckpt,
                             data_dir=args.data_dir,
                             data_split=args.data_split,
+                            tokenizer=cli_tokenizer,
+                            latent_scale=args.latent_scale,
+                            warmup_steps=args.warmup_steps,
+                            lr_schedule=args.lr_schedule,
+                            total_steps=args.steps,
+                            grad_accum=args.grad_accum, amp=args.amp,
                             grad_checkpoint=args.grad_checkpoint,
                             use_depth=use_depth,
                             depth_dropout=args.depth_dropout,

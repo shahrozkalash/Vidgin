@@ -37,9 +37,14 @@ class TinyTextEncoder(nn.Module):
     "Expected all tensors to be on the same device".
     """
 
-    def __init__(self, vocab: list[str] | None = None, d_t: int = 256, max_len: int = 32):
+    def __init__(self, vocab: list[str] | None = None, d_t: int = 256, max_len: int = 32,
+                 tokenizer=None):
         super().__init__()
-        self.vocab = vocab or VOCAB
+        # Phase 2: a CaptionTokenizer (trained on the dataset's captions)
+        # replaces the fixed 27-word table; self.vocab is then the
+        # tokenizer's word list, so checkpoint shapes follow its size.
+        self.tokenizer = tokenizer
+        self.vocab = list(tokenizer.words) if tokenizer is not None else (vocab or VOCAB)
         self.word2id = {w: i for i, w in enumerate(self.vocab)}
         self.d_t = d_t
         self.max_len = max_len
@@ -48,6 +53,8 @@ class TinyTextEncoder(nn.Module):
         self.register_buffer("_null_ids", torch.zeros(1, 1, dtype=torch.long))
 
     def tokenize(self, caption: str) -> list[int]:
+        if self.tokenizer is not None:
+            return self.tokenizer.encode(caption)[: self.max_len]
         ids = [self.word2id.get(w, self.word2id["<unk>"])
                for w in caption.lower().split()][: self.max_len]
         return ids
@@ -94,12 +101,17 @@ class TransformerTextEncoder(nn.Module):
     """
 
     def __init__(self, d_t: int = 1024, max_len: int = 128, layers: int = 24,
-                 heads: int = 16, ffn: int = 4096, vocab_size: int = 8192):
+                 heads: int = 16, ffn: int = 4096, vocab_size: int = 8192,
+                 tokenizer=None):
         super().__init__()
         self.d_t = d_t
         self.max_len = max_len
-        self.vocab_size = vocab_size
-        self.embedding = nn.Embedding(vocab_size, d_t, padding_idx=0)
+        # Phase 2: with a CaptionTokenizer the embedding has one row per
+        # vocabulary word (no hash collisions); without one the legacy
+        # crc32 word-hash behaviour is kept bit-for-bit.
+        self.tokenizer = tokenizer
+        self.vocab_size = len(tokenizer) if tokenizer is not None else vocab_size
+        self.embedding = nn.Embedding(self.vocab_size, d_t, padding_idx=0)
         self.pos_embedding = nn.Embedding(max_len, d_t)
         layer = nn.TransformerEncoderLayer(
             d_model=d_t, nhead=heads, dim_feedforward=ffn, dropout=0.0,
@@ -112,6 +124,8 @@ class TransformerTextEncoder(nn.Module):
         self.register_buffer("_null_ids", torch.zeros(1, 1, dtype=torch.long))
 
     def tokenize(self, caption: str) -> list[int]:
+        if self.tokenizer is not None:
+            return self.tokenizer.encode(caption)[: self.max_len]
         return [1 + zlib.crc32(w.encode("utf-8")) % (self.vocab_size - 1)
                 for w in caption.lower().split()[: self.max_len]]
 
@@ -151,21 +165,42 @@ class TransformerTextEncoder(nn.Module):
         return emb, mask
 
 
-def build_text_encoder(cfg) -> nn.Module:
+def build_text_encoder(cfg, tokenizer=None) -> nn.Module:
     """Config-gated factory used by the trainer and the sampler.
 
     cfg.text_layers == 0 (every preset and checkpoint from before the
     flagship text upgrade) returns the legacy TinyTextEncoder, so old
     checkpoints load unchanged; text_layers > 0 returns the
     TransformerTextEncoder at the config's width/depth.
+
+    Tokenization mode is cfg.text_tokenizer: "hash" (default; the legacy
+    fixed table / crc32 word-hash — every pre-Phase-2 checkpoint) or
+    "caption", which REQUIRES the CaptionTokenizer the run was trained
+    with (stored inside the checkpoint). A caption-mode config without
+    its tokenizer is a hard error, never a silent fallback: tokenizing
+    differently than training would corrupt conditioning.
     """
+    mode = getattr(cfg, "text_tokenizer", "hash")
+    if mode == "caption":
+        if tokenizer is None:
+            raise ValueError(
+                "config requests the caption tokenizer (text_tokenizer="
+                "'caption') but no CaptionTokenizer was supplied; load it "
+                "from the checkpoint's 'tokenizer' payload or pass "
+                "--tokenizer-vocab <tokenizer.json>")
+    elif tokenizer is not None:
+        raise ValueError(
+            "a CaptionTokenizer was supplied but the config is in 'hash' "
+            "mode; set text_tokenizer='caption' (the trainer does this "
+            "automatically when --tokenizer-vocab is passed)")
     if getattr(cfg, "text_layers", 0) > 0:
         return TransformerTextEncoder(
             d_t=cfg.text_dim, max_len=cfg.text_max_len,
             layers=cfg.text_layers, heads=cfg.text_heads,
             ffn=cfg.text_ffn or 4 * cfg.text_dim,
-            vocab_size=cfg.text_vocab_size)
-    return TinyTextEncoder(d_t=cfg.text_dim, max_len=cfg.text_max_len)
+            vocab_size=cfg.text_vocab_size, tokenizer=tokenizer)
+    return TinyTextEncoder(d_t=cfg.text_dim, max_len=cfg.text_max_len,
+                           tokenizer=tokenizer)
 
 
 class FrozenEncoderStub:
