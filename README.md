@@ -85,3 +85,72 @@ tests/test_seed.py::test_seed_everything_divergence PASSED               [ 94%]
 tests/test_seed.py::test_gpu_seed_determinism SKIPPED                    [100%]
 ======================== 16 passed, 3 skipped in 11.49s ========================
 ```
+
+---
+
+## Practical Guide: Prepare, Train, Evaluate (2026-10-23)
+
+The sections above are the original design document. This section is
+the working manual for the pipeline as it exists today. Everything
+runs on free tiers; no paid API is required anywhere in the core
+pipeline (the Gemini caption tool is optional and free-tier paced).
+
+### Hardware reality
+
+| Preset | Trains on | Notes |
+|---|---|---|
+| tiny (64x64, 17f) | any CPU / any GPU | smoke tests + pipeline verification |
+| small (256x256, 33f) | 1 GPU with ~6 GB+ (free T4 works) | use `--grad-checkpoint --batch-size 1..2` |
+| vidgen480p (832x480, 81f) | ~24 GB+ GPU, gradient checkpointing | not yet trained |
+| vidgen9b / vidgen14b | multi-GPU cluster (FSDP) | defined and verified by shape; NOT trainable on a single free GPU |
+
+### Commands
+
+```bash
+# 1. Prepare real clips (validated downloads, quality resize, depth)
+python scripts/prepare_clips.py --source urls --urls-file urls.txt \
+    --frames 33 --size 256 --depth --crop energy --out data/small-clips
+
+# 2. Check the dataset, audit its captions, split without leakage
+python scripts/vidgin_helper.py check data/small-clips --require-depth
+python scripts/vidgin_helper.py captions-audit data/small-clips
+python scripts/vidgin_helper.py split data/small-clips
+python scripts/vidgin_helper.py verify-splits data/small-clips
+
+# 3. (Optional) real captions from the frames, free tier only
+python scripts/vidgin_helper.py captions --data-dir data/small-clips
+
+# 4. Build the tokenizer from the dataset's own captions
+python scripts/build_tokenizer.py --data-dir data/small-clips \
+    --out tokenizer.json            # or: --method bpe for subwords
+
+# 5. Train the VAE, then MEASURE its latents before any DiT run
+python -m vidgen.train_vae --preset small --data-dir data/small-clips \
+    --data-split train --require-real --steps 4000 \
+    --ckpt-dir ckpts/vae --ckpt-every 500
+python scripts/measure_latents.py --vae-ckpt ckpts/vae/latest.pt \
+    --preset small --data-dir data/small-clips \
+    --preview-mp4 recon_side_by_side.mp4 --min-psnr 12
+
+# 6. Train the DiT with the measured latent scale
+python -m vidgen.train --preset small --data-dir data/small-clips \
+    --data-split train --require-real --depth --grad-checkpoint \
+    --vae-ckpt ckpts/vae/latest.pt --latent-scale <measured> \
+    --tokenizer-vocab tokenizer.json --steps 15000 \
+    --ckpt-dir ckpts/dit --ckpt-every 500
+
+# 7. One-command evaluation report (add --compare old.json to diff)
+python scripts/run_evaluation.py --data-dir data/small-clips \
+    --tokenizer-vocab tokenizer.json --vae-ckpt ckpts/vae/latest.pt \
+    --dit-ckpt ckpts/dit/latest.pt --preset small --out report.json
+
+# 8. Sample a video (frames + clip.mp4)
+python -m vidgen.sample --dit-ckpt ckpts/dit/latest.pt \
+    --vae-ckpt ckpts/vae/latest.pt --prompt "people walking in a city"
+```
+
+Resume is always `--resume <checkpoint> --steps <additional steps>`;
+checkpoints save atomically and carry the tokenizer, latent scale,
+LR schedule and RNG state, so a resumed run continues the same run.
+If CUDA runs out of memory the trainer prints concrete recovery steps
+(smaller batch, `--grad-checkpoint`, `--grad-accum`, `--amp bf16`).

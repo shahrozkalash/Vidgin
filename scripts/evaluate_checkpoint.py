@@ -49,6 +49,8 @@ DEFAULT_PROMPTS = [
     "people walking across a city street",
     "cars driving through a busy intersection",
     "a crowd moving through the city",
+    "the camera pans across a busy city skyline",
+    "a street scene changing from day to night",
 ]
 
 

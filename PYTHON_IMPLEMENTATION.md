@@ -1005,3 +1005,49 @@ defaults reproduce historical behaviour unless a caller opts in.
   provenance (git commit, seed, Python/torch versions, dataset size)
   and pass/warn/fail/skipped per step. `--compare` diffs metric
   deltas against a previous report.
+
+## Weakness-fix programme #3 (2026-10-23)
+
+Third audit pass, focused on training correctness and the remaining
+items from programme #2's honest-leftovers list.
+
+- **Flow objective re-verified, not changed.** Interpolation
+  x_t = (1-t)x_0 + t*x_1, target v = x_1 - x_0, sampler integrates
+  0 -> 1: consistent across flow.py / train.py / sampler.py. New
+  regression tests pin the exact interpolation, the zero-loss
+  perfect-prediction case, a sign-flipped negative control, and
+  generator determinism (oracle sampler recovery was already tested).
+- **Non-finite step guard.** `NonFiniteGuard` (vidgen/train_utils.py)
+  wired into both trainers: a NaN/Inf loss or gradient norm skips the
+  optimizer step (gradients discarded, weights untouched) and counts;
+  >10 consecutive bad steps stop the run with the likely causes
+  printed. Previously one bad batch silently poisoned a whole run.
+- **CUDA OOM guidance.** Both trainer CLIs catch
+  torch.cuda.OutOfMemoryError and print ordered recovery steps
+  (batch size, --grad-checkpoint, --grad-accum, --amp bf16, resume
+  from the intact checkpoints), exiting with code 3.
+- **Energy crop.** prepare_clips --crop energy: one crop window per
+  clip placed on the highest-gradient-energy square of the mean frame
+  (summed-area table, pure numpy) so edge subjects survive framing;
+  center crop remains the default. Recorded in prep_report.json.
+- **VAE evidence.** measure_latent_stats now reports latent_finite +
+  non-finite counts; measure_latents.py --preview-mp4 writes a
+  side-by-side original|reconstruction MP4 (temporal distortion is
+  visible in a way PSNR alone hides).
+- **Temporal evaluation.** evaluate.py gains frozen_pair_fraction
+  (share of near-identical consecutive frame pairs); the fixed
+  evaluation prompt set grows to five categories (walking, vehicles,
+  crowd, camera movement, scene change).
+- **Conditioning distinction test.** The text encoder must produce
+  different embeddings for different captions and identical ones for
+  identical captions — now a regression test, not an assumption.
+- **run_evaluation.py** gains a gradient_check step (a real tiny DiT
+  step: finite loss, nonzero gradients, parameters move), a
+  same-corpus word-vs-BPE coverage comparison in the tokenizer step,
+  and runtime_seconds / peak_gpu_mem_mb in the report.
+- **Pretrained text encoder: deliberately NOT integrated.** The
+  prompt's conditional suggestion conflicts with the project's
+  ownership rule (no Vidgin feature powered by another model's
+  weights). The conditioning test above measures the current
+  encoder's real behaviour instead; growing Vidgin's own encoder
+  remains the path.

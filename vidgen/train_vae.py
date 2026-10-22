@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 
 import torch
 
@@ -47,7 +48,8 @@ from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.train_utils import (
-    amp_context, build_lr_scheduler, make_grad_scaler, validate_train_options,
+    NonFiniteGuard, amp_context, build_lr_scheduler, make_grad_scaler,
+    oom_guidance, validate_train_options,
 )
 from vidgen.vae.model import CausalVAE, vae_loss
 
@@ -138,6 +140,7 @@ class VAETrainer:
         self.logger = (StructuredLogger(log_path)
                        if log_path and self.is_main_rank else None)
         self.loss_history: list[float] = []
+        self._nf_guard = NonFiniteGuard()
         self.init_from: str | None = None
 
         # DDP wrap LAST (optimizer/checkpoint paths use the raw module's
@@ -185,11 +188,17 @@ class VAETrainer:
         if self.scaler is not None:
             self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(self.vae.parameters(), 1.0)
-        if self.scaler is not None:
-            self.scaler.step(self.opt)
-            self.scaler.update()
+        skipped_nonfinite = False
+        if self._nf_guard.check(total_loss / self.grad_accum,
+                                float(grad_norm)):
+            if self.scaler is not None:
+                self.scaler.step(self.opt)
+                self.scaler.update()
+            else:
+                self.opt.step()
         else:
-            self.opt.step()
+            skipped_nonfinite = True
+            self.opt.zero_grad()
         if self.sched is not None:
             self.sched.step()
         secs = time.perf_counter() - t0
@@ -199,6 +208,8 @@ class VAETrainer:
                "lr": self.opt.param_groups[0]["lr"], "grad_norm": float(grad_norm),
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
+        if skipped_nonfinite:
+            rec["skipped_nonfinite"] = True
         if str(self.device).startswith("cuda") and torch.cuda.is_available():
             rec["gpu_mem_mb"] = round(
                 torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
@@ -434,7 +445,11 @@ def main() -> None:
                   f"global_batch={tr.global_batch_size}")
 
         for _ in range(args.steps):
-            tr.train_step()
+            try:
+                tr.train_step()
+            except torch.cuda.OutOfMemoryError:
+                print(oom_guidance("VAE training"), file=sys.stderr)
+                raise SystemExit(3)
             if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
                 barrier(dist_info)
                 if main_rank:

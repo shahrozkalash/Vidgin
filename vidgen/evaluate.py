@@ -97,6 +97,21 @@ def memorization_distance(clips: list[np.ndarray],
             "min_nearest": float(np.min(nearest))}
 
 
+def frozen_pair_fraction(clip: np.ndarray, eps: float = 0.5) -> float:
+    """Fraction of consecutive frame pairs that are (near-)identical.
+
+    A generated clip whose frames barely change is frozen, whatever
+    its per-frame sharpness says. ``eps`` is a mean-absolute-difference
+    threshold on the clips' pixel scale (0..255 for the uint8 clips
+    this module evaluates; 0.5 ≈ sub-gray-level average change).
+    1.0 = a still image, 0.0 = every frame moves.
+    """
+    if len(clip) < 2:
+        return 1.0
+    diffs = np.abs(np.diff(clip.astype(np.float32), axis=0)).mean(axis=(1, 2, 3))
+    return float(np.mean(diffs < eps))
+
+
 def evaluate_clip_set(clips: list[np.ndarray],
                       train_clips: list[np.ndarray] | None = None) -> dict:
     """Aggregate metrics for a set of generated clips."""
@@ -109,6 +124,8 @@ def evaluate_clip_set(clips: list[np.ndarray],
         "flicker_score": float(np.mean([flicker_score(c) for c in clips])),
         "sharpness": float(np.mean([sharpness(c) for c in clips])),
         "diversity": diversity(clips),
+        "frozen_pair_fraction": float(np.mean(
+            [frozen_pair_fraction(c) for c in clips])),
         "memorization": memorization_distance(clips, train_clips or []),
         "prompt_adherence": (
             "not measured: requires a learned text-video evaluator, "

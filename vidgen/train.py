@@ -23,6 +23,7 @@ Weight-averaging pool worker (one round; see PYTHON_IMPLEMENTATION.md):
 from __future__ import annotations
 
 import argparse
+import sys
 import os
 
 import torch
@@ -54,7 +55,8 @@ from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.text.tokenizer import CaptionTokenizer, load_tokenizer, tokenizer_from_dict
 from vidgen.train_utils import (
-    amp_context, build_lr_scheduler, make_grad_scaler, validate_train_options,
+    NonFiniteGuard, amp_context, build_lr_scheduler, make_grad_scaler,
+    oom_guidance, validate_train_options,
 )
 from vidgen.dit.model import DiT
 from vidgen.vae.model import CausalVAE
@@ -186,6 +188,7 @@ class DiTTrainer:
         self.logger = (StructuredLogger(log_path)
                        if log_path and self.is_main_rank else None)
         self.loss_history: list[float] = []
+        self._nf_guard = NonFiniteGuard()
         self.init_from: str | None = None
 
         # DDP wrap LAST: the optimizer, checkpoint loading and warm paths
@@ -287,11 +290,19 @@ class DiTTrainer:
             self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             list(self.dit.parameters()) + list(self.text_enc.parameters()), 1.0)
-        if self.scaler is not None:
-            self.scaler.step(self.opt)
-            self.scaler.update()
+        skipped_nonfinite = False
+        if self._nf_guard.check(total_loss / self.grad_accum,
+                                float(grad_norm)):
+            if self.scaler is not None:
+                self.scaler.step(self.opt)
+                self.scaler.update()
+            else:
+                self.opt.step()
         else:
-            self.opt.step()
+            # Non-finite step: discard the poisoned gradients WITHOUT
+            # stepping, so the weights stay exactly as they were.
+            skipped_nonfinite = True
+            self.opt.zero_grad()
         if self.sched is not None:
             self.sched.step()
 
@@ -303,6 +314,8 @@ class DiTTrainer:
                "bin_loss": [round(v, 5) for v in bin_mean],
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
+        if skipped_nonfinite:
+            rec["skipped_nonfinite"] = True
         if str(self.device).startswith("cuda") and torch.cuda.is_available():
             rec["gpu_mem_mb"] = round(
                 torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
@@ -681,7 +694,11 @@ def main() -> None:
                   f"global_batch={tr.global_batch_size}")
 
         for _ in range(args.steps):
-            rec = tr.train_step()
+            try:
+                rec = tr.train_step()
+            except torch.cuda.OutOfMemoryError:
+                print(oom_guidance("DiT training"), file=sys.stderr)
+                raise SystemExit(3)
             if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
                 # All ranks arrive together; only rank 0 writes (its
                 # weights are identical to every other rank's).

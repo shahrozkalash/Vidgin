@@ -35,6 +35,9 @@ import json
 import os
 import subprocess
 import sys
+import time
+
+import numpy as np
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,6 +96,7 @@ def main() -> int:
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     steps: dict[str, dict] = {}
+    t_start = time.perf_counter()
 
     # 1 — dataset health
     ds = check_dataset(args.data_dir)
@@ -117,7 +121,7 @@ def main() -> int:
         steps["captions"] = {"status": "fail", "error": str(exc)}
         clip_count = None
 
-    # 3 — tokenizer coverage
+    # 3 — tokenizer coverage (+ same-corpus word-vs-BPE comparison)
     if args.tokenizer_vocab:
         tok = load_tokenizer(args.tokenizer_vocab)
         captions = [str(e.get("caption", "")) for e in entries]
@@ -126,10 +130,52 @@ def main() -> int:
                 "oov_rate": round(tok.oov_rate(captions), 4)}
         if hasattr(tok, "unk_token_rate"):
             info["unk_token_rate"] = round(tok.unk_token_rate(captions), 4)
+        if type(tok).__name__ == "CaptionTokenizer":
+            # Same corpus, same vocab budget: what would BPE give?
+            total_words = sum(len(c.split()) for c in captions)
+            if 0 < total_words <= 200_000:
+                from vidgen.text.bpe import BPETokenizer
+
+                bpe = BPETokenizer.train(captions, vocab_size=len(tok))
+                info["bpe_comparison"] = {
+                    "vocab_size": len(bpe),
+                    "oov_rate": round(bpe.oov_rate(captions), 4),
+                    "unk_token_rate": round(bpe.unk_token_rate(captions), 4),
+                    "note": "coverage only — BPE is not thereby proven "
+                            "better for training; that needs a real run",
+                }
         steps["tokenizer"] = {"status": "pass", **info}
     else:
         steps["tokenizer"] = {"status": "skipped",
                               "reason": "no --tokenizer-vocab given"}
+
+    # 3b — training gradient check: one real tiny DiT step on CPU.
+    # Proves the training path is alive (finite loss, gradients flow,
+    # parameters actually move) independently of any checkpoint.
+    try:
+        import torch as _torch
+
+        from vidgen.train import DiTTrainer as _DiTTrainer
+
+        _tr = _DiTTrainer(preset="tiny", batch_size=1, device="cpu")
+        _before = [p.detach().clone() for p in
+                   list(_tr.dit.parameters())[:4]]
+        _rec = _tr.train_step()
+        _grads = [float(p.grad.abs().sum()) if p.grad is not None else 0.0
+                  for p in _tr.dit.parameters()]
+        _moved = any(not _torch.equal(a, b) for a, b in zip(
+            _before, list(_tr.dit.parameters())[:4]))
+        _ok = (bool(np.isfinite(_rec["loss"])) and sum(_grads) > 0
+               and _moved)
+        steps["gradient_check"] = {
+            "status": "pass" if _ok else "fail",
+            "loss": _rec["loss"],
+            "nonzero_grad_params": int(sum(1 for g in _grads if g > 0)),
+            "total_params_checked": len(_grads),
+            "parameters_moved": _moved,
+        }
+    except Exception as exc:  # noqa: BLE001
+        steps["gradient_check"] = {"status": "fail", "error": str(exc)}
 
     # 4 — split leakage
     if os.path.isfile(os.path.join(args.data_dir, "manifest_train.jsonl")):
@@ -205,6 +251,10 @@ def main() -> int:
             "tokenizer_vocab": args.tokenizer_vocab,
         },
         "steps": steps,
+        "runtime_seconds": round(time.perf_counter() - t_start, 2),
+        "peak_gpu_mem_mb": (round(torch.cuda.max_memory_allocated()
+                                  / (1024 * 1024), 1)
+                            if torch.cuda.is_available() else None),
         "overall_status": _worst([s["status"] for s in steps.values()]),
     }
 

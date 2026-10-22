@@ -107,6 +107,57 @@ def center_crop_square(frame: np.ndarray) -> np.ndarray:
     return frame[y0 : y0 + s, x0 : x0 + s]
 
 
+def energy_crop_offset(mean_frame: np.ndarray) -> tuple[int, int]:
+    """Top-left offset of the square crop with the most visual energy.
+
+    Center crop (the historical behaviour) cuts off subjects standing
+    at the frame edge. This picks, per clip, the square window whose
+    summed gradient magnitude (edges = people, vehicles, texture) is
+    highest, computed on the clip's temporal-mean frame so the window
+    is stable across all frames. Pure numpy, no external model — a
+    saliency heuristic, not a subject detector: it prefers busy
+    regions, which is where the action usually is.
+    """
+    gray = mean_frame.astype(np.float32).mean(axis=2)
+    h, w = gray.shape
+    s = min(h, w)
+    if h == s and w == s:
+        return 0, 0
+    gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
+    gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
+    energy = gx + gy
+    sat = np.zeros((h + 1, w + 1), dtype=np.float64)
+    sat[1:, 1:] = np.cumsum(np.cumsum(energy, axis=0), axis=1)
+
+    def window_sum(y0: int, x0: int) -> float:
+        return float(sat[y0 + s, x0 + s] - sat[y0, x0 + s]
+                     - sat[y0 + s, x0] + sat[y0, x0])
+
+    step_y = max(1, (h - s) // 8) if h > s else 1
+    step_x = max(1, (w - s) // 8) if w > s else 1
+    best, best_score = (max(0, (h - s) // 2), max(0, (w - s) // 2)), -1.0
+    for y0 in range(0, h - s + 1, step_y):
+        for x0 in range(0, w - s + 1, step_x):
+            score = window_sum(y0, x0)
+            if score > best_score:
+                best, best_score = (y0, x0), score
+    # Always consider the exact far edge (the grid may step past it).
+    for y0, x0 in ((h - s, best[1]), (best[0], w - s), (h - s, w - s)):
+        score = window_sum(y0, x0)
+        if score > best_score:
+            best, best_score = (y0, x0), score
+    return best
+
+
+def crop_square(frame: np.ndarray, offset: tuple[int, int]) -> np.ndarray:
+    """frame (H, W, 3) -> (S, S, 3) crop at an explicit offset."""
+    h, w = frame.shape[:2]
+    s = min(h, w)
+    y0 = min(max(0, offset[0]), h - s)
+    x0 = min(max(0, offset[1]), w - s)
+    return frame[y0 : y0 + s, x0 : x0 + s]
+
+
 def resize_nearest(frame: np.ndarray, size: int) -> np.ndarray:
     """Nearest-neighbor resize (S, S, 3) -> (size, size, 3). Pure numpy."""
     s = frame.shape[0]
@@ -236,7 +287,7 @@ def download(url: str, dest: str) -> None:
     import http.client
 
     last = None
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "vidgin-prepare/1.0"}
@@ -382,16 +433,28 @@ def collect_pixabay(api_key: str, queries: list[str], per_query: int) -> list[tu
 # ------------------------------------------------------------ clip building
 def build_clip(frames: np.ndarray, n_frames: int, size: int,
                resize_method: str = "area",
-               thresholds: dict | None = None
+               thresholds: dict | None = None,
+               crop: str = "center"
                ) -> tuple[np.ndarray | None, str | None]:
-    """frames (N,H,W,3) uint8 -> (clip (T,H,W,3) uint8, None) or (None, reason)."""
+    """frames (N,H,W,3) uint8 -> (clip (T,H,W,3) uint8, None) or (None, reason).
+
+    ``crop``: "center" (historical) or "energy" — one crop window per
+    clip, placed on the highest-visual-energy square of the mean frame
+    so edge-standing subjects are not cut off unnecessarily.
+    """
     idx = select_frame_indices(len(frames), n_frames)
     if idx is None:
         return None, "too_short"
     window = frames[idx]
+    if crop == "energy":
+        offset = energy_crop_offset(window.astype(np.float32).mean(axis=0))
+        cropped = [crop_square(f, offset) for f in window]
+    elif crop == "center":
+        cropped = [center_crop_square(f) for f in window]
+    else:
+        raise ValueError(f"unknown crop mode: {crop!r}")
     out = np.stack(
-        [resize_frame(center_crop_square(f), size, resize_method)
-         for f in window]
+        [resize_frame(f, size, resize_method) for f in cropped]
     ).astype(np.uint8)
     if float(out.mean()) < MEAN_BRIGHTNESS_MIN:
         return None, "too_dark"
@@ -486,6 +549,10 @@ def main() -> None:
                     help="0..255 mean-brightness ceiling (overexposure)")
     ap.add_argument("--no-contact-sheet", action="store_true",
                     help="skip writing contact_sheet.png QA preview")
+    ap.add_argument("--crop", choices=["center", "energy"], default="center",
+                    help="square-crop strategy: center (historical) or "
+                         "energy (per-clip window on the busiest region, "
+                         "keeps edge subjects in frame)")
     args = ap.parse_args()
     thresholds = {}
     for cli, key in (("min_sharpness", "sharpness_min"),
@@ -604,7 +671,8 @@ def main() -> None:
                     continue
                 clip, reason = build_clip(frames, args.frames, args.size,
                                           resize_method=args.resize,
-                                          thresholds=thresholds or None)
+                                          thresholds=thresholds or None,
+                                          crop=args.crop)
                 if clip is None:
                     skipped += 1
                     reasons[reason] = reasons.get(reason, 0) + 1  # type: ignore[arg-type]
@@ -663,7 +731,8 @@ def main() -> None:
         "seed": args.seed,
         "config": {
             "frames": args.frames, "size": args.size, "depth": args.depth,
-            "resize": args.resize, "thresholds": thresholds,
+            "resize": args.resize, "crop": args.crop,
+            "thresholds": thresholds,
             "source": args.source,
         },
         "videos_seen": len(items), "downloaded": downloaded,

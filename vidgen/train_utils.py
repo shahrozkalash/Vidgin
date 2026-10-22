@@ -93,3 +93,56 @@ def validate_train_options(grad_accum: int, amp: str) -> None:
         raise ValueError(f"grad_accum must be >= 1, got {grad_accum}")
     if amp not in AMP_MODES:
         raise ValueError(f"unknown amp mode {amp!r}; choose {AMP_MODES}")
+
+
+class NonFiniteGuard:
+    """Detects NaN/Inf training steps and protects the weights from them.
+
+    A single non-finite loss (bad batch, loss spike under mixed
+    precision, corrupted clip) previously flowed straight into the
+    optimizer and poisoned the model permanently — every later step
+    stayed NaN and the run was garbage without any message saying when
+    it happened. The trainers now check the loss and gradient norm
+    BEFORE stepping: a bad step is skipped (gradients discarded, no
+    weight update) and counted; if bad steps repeat beyond
+    ``max_bad`` the run stops loudly, because at that point something
+    is systematically wrong (usual causes: learning rate too high,
+    corrupted data, or fp16 without a scaler).
+    """
+
+    def __init__(self, max_bad: int = 10):
+        self.max_bad = max_bad
+        self.bad_steps = 0
+        self.consecutive_bad = 0
+
+    def check(self, *values: float) -> bool:
+        """True when every value is finite (the step may proceed)."""
+        import math
+
+        if all(math.isfinite(float(v)) for v in values):
+            self.consecutive_bad = 0
+            return True
+        self.bad_steps += 1
+        self.consecutive_bad += 1
+        if self.consecutive_bad > self.max_bad:
+            raise RuntimeError(
+                f"training stopped: {self.consecutive_bad} consecutive "
+                "non-finite (NaN/Inf) steps — the loss or gradients "
+                "blew up. Lower the learning rate, check the data for "
+                "corrupt clips, and if using --amp fp16 make sure the "
+                "run is on CUDA (the grad scaler only exists there).")
+        return False
+
+
+def oom_guidance(context: str = "training") -> str:
+    """Practical recovery steps printed when CUDA runs out of memory."""
+    return (
+        f"CUDA out of memory during {context}. In order of preference:\n"
+        "  1. halve --batch-size (activation memory scales with it);\n"
+        "  2. add --grad-checkpoint (recomputes activations; ~30% slower, "
+        "much less memory) and recover the effective batch with "
+        "--grad-accum;\n"
+        "  3. add --amp bf16 (halves activation memory on Ampere+ GPUs);\n"
+        "  4. train a smaller preset, or fewer frames per clip.\n"
+        "Your checkpoints up to the last saved step are intact — "
+        "resume with --resume <latest checkpoint> instead of restarting.")

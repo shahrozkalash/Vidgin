@@ -47,11 +47,14 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
     count_c = 0        # elements per channel
     mse_sum = 0.0
     mse_count = 0
+    nonfinite_latents = 0   # mu elements that are NaN/Inf (broken VAE)
+    nonfinite_recon = 0
 
     for start in range(0, n, batch_size):
         idx = list(range(start, min(start + batch_size, n)))
         x = torch.stack([dataset[i][0] for i in idx]).to(device)
         mu, _ = vae.encode(x)
+        nonfinite_latents += int((~torch.isfinite(mu)).sum())
         flat = mu.double().permute(1, 0, 2, 3, 4).reshape(mu.shape[1], -1)
         if sum_c is None:
             sum_c = flat.sum(dim=1)
@@ -62,6 +65,7 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
         count_c += flat.shape[1]
 
         recon = vae.decode(mu)
+        nonfinite_recon += int((~torch.isfinite(recon)).sum())
         mse_sum += float(((recon - x) ** 2).sum().double())
         mse_count += x.numel()
 
@@ -90,6 +94,9 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
                                      if global_std > 0 else None),
         "recon_mse": round(mse, 8),
         "recon_psnr_db": (round(psnr, 3) if math.isfinite(psnr) else None),
+        "latent_finite": nonfinite_latents == 0,
+        "nonfinite_latent_values": nonfinite_latents,
+        "nonfinite_recon_values": nonfinite_recon,
     }
 
 
@@ -124,4 +131,32 @@ def save_recon_preview(vae, clip: torch.Tensor, path: str,
     sheet = sheet.resize((sheet.width * 4, sheet.height * 4),
                          Image.NEAREST)
     sheet.save(path)
+    return path
+
+
+@torch.no_grad()
+def save_recon_mp4(vae, clip: torch.Tensor, path: str, fps: int = 8,
+                   device: str = "cpu") -> str:
+    """Side-by-side MP4: original (left) vs reconstruction (right).
+
+    A PNG strip shows frames; a playing side-by-side video shows what
+    numbers hide — temporal distortion, flicker introduced by the VAE,
+    motion smearing. Frames are concatenated along the width, so the
+    output is [T, H, 2W, 3]. Written via vidgen.video_io (frame count
+    verified on read-back).
+    """
+    import numpy as np
+
+    from vidgen.video_io import write_mp4
+
+    vae.eval()
+    x = clip.unsqueeze(0).to(device)
+    mu, _ = vae.encode(x)
+    recon = vae.decode(mu)[0].clamp(-1, 1).cpu()
+    src = clip.clamp(-1, 1).cpu()
+    # [3,T,H,W] -> [T,H,W,3]
+    a = src.permute(1, 2, 3, 0).numpy()
+    b = recon.permute(1, 2, 3, 0).numpy()
+    side = np.concatenate([a, b], axis=2)
+    write_mp4(side, path, fps=fps)
     return path

@@ -35,7 +35,9 @@ from vidgen.config import get_preset, resolve_device
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.vae.model import CausalVAE
-from vidgen.vae.stats import measure_latent_stats, save_recon_preview
+from vidgen.vae.stats import (
+    measure_latent_stats, save_recon_mp4, save_recon_preview,
+)
 
 
 def main() -> int:
@@ -53,6 +55,10 @@ def main() -> int:
     ap.add_argument("--preview-dir", default=None,
                     help="also save input-vs-reconstruction PNG previews "
                          "for the first 3 clips into this directory")
+    ap.add_argument("--preview-mp4", default=None,
+                    help="also save a side-by-side original|reconstruction "
+                         "MP4 of the first clip to this path (shows "
+                         "temporal distortion numbers can hide)")
     ap.add_argument("--min-psnr", type=float, default=None,
                     help="fail (exit 1) if reconstruction PSNR is below this")
     args = ap.parse_args()
@@ -99,6 +105,10 @@ def main() -> int:
             out = os.path.join(args.preview_dir, f"recon_{i}.png")
             save_recon_preview(vae, clip, out, device=str(device))
             print(f"Preview: {out}")
+    if args.preview_mp4:
+        clip, _caption = dataset[0]
+        save_recon_mp4(vae, clip, args.preview_mp4, device=str(device))
+        print(f"Side-by-side MP4: {args.preview_mp4}")
     if args.min_psnr is not None and report["recon_psnr_db"] is not None \
             and report["recon_psnr_db"] < args.min_psnr:
         print(f"GATE FAILED: PSNR {report['recon_psnr_db']} dB < "
