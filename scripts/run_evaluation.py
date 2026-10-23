@@ -234,6 +234,116 @@ def main() -> int:
         steps["dit_samples"] = {"status": "skipped",
                                 "reason": "no --dit-ckpt given"}
 
+    # 6b — checkpoint compatibility + resume validation: the payload
+    # must carry everything a resume needs (weights, optimizer,
+    # config, step; tokenizer/scheduler when applicable), and for
+    # the tiny preset the checkpoint must actually resume on CPU.
+    if args.dit_ckpt:
+        try:
+            import torch as _t
+
+            payload = _t.load(args.dit_ckpt, map_location="cpu",
+                              weights_only=False)
+            required = ["kind", "preset", "step", "dit", "text_enc",
+                        "opt", "config"]
+            missing = [k for k in required if k not in payload]
+            detail = {"step": payload.get("step"),
+                      "preset": payload.get("preset"),
+                      "has_tokenizer": "tokenizer" in payload,
+                      "has_sched_state": "sched" in payload,
+                      "missing_keys": missing}
+            if missing:
+                steps["checkpoint_resume"] = {"status": "fail", **detail}
+            elif args.preset == "tiny":
+                from vidgen.train import DiTTrainer as _DT
+
+                _tr = _DT.resume(args.dit_ckpt, device="cpu")
+                detail["resumed_step"] = _tr.step
+                steps["checkpoint_resume"] = {
+                    "status": ("pass" if _tr.step == payload["step"]
+                               else "fail"), **detail}
+            else:
+                steps["checkpoint_resume"] = {
+                    "status": "pass",
+                    "note": "payload verified; full resume smoke is "
+                            "tiny/CPU only", **detail}
+        except Exception as exc:  # noqa: BLE001
+            steps["checkpoint_resume"] = {"status": "fail",
+                                          "error": str(exc)}
+    else:
+        steps["checkpoint_resume"] = {"status": "skipped",
+                                      "reason": "no --dit-ckpt given"}
+
+    # 6c — paired-prompt response: same seed, two meaningfully
+    # different prompts, sampled fresh. A distance near zero means
+    # the conditioning is not reaching generation for THIS
+    # checkpoint (undertrained, or its tokenizer's vocabulary does
+    # not contain the prompt words) — reported, never hidden.
+    if args.dit_ckpt and args.vae_ckpt and (
+            args.preset == "tiny" or args.device != "cpu"):
+        try:
+            import cv2
+
+            from vidgen.evaluate import clip_distance, motion_mean_absdiff
+
+            def _load_mp4(p):
+                cap = cv2.VideoCapture(p)
+                frames = []
+                while True:
+                    ok, f = cap.read()
+                    if not ok:
+                        break
+                    frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+                cap.release()
+                return np.stack(frames)
+
+            pr_base = (args.out_dir or (args.out + ".artifacts"))
+            prompts = ["people walking in a city street",
+                       "cars driving on a city road"]
+            env = dict(os.environ)
+            env["PYTHONPATH"] = repo + os.pathsep + env.get(
+                "PYTHONPATH", "")
+            clips, paths = [], []
+            for i, prompt in enumerate(prompts):
+                out_dir = os.path.join(pr_base, "prompt_response", f"p{i}")
+                cmd = [sys.executable, "-m", "vidgen.sample",
+                       "--ckpt", args.dit_ckpt,
+                       "--vae-ckpt", args.vae_ckpt,
+                       "--prompt", prompt, "--steps", "20",
+                       "--seed", str(args.seed), "--outdir", out_dir]
+                proc = subprocess.run(cmd, capture_output=True,
+                                      text=True, env=env)
+                mp4 = os.path.join(out_dir, "clip.mp4")
+                if proc.returncode != 0 or not os.path.isfile(mp4):
+                    raise RuntimeError(
+                        f"sampling failed for prompt {i}: "
+                        f"{(proc.stderr or proc.stdout)[-300:]}")
+                clips.append(_load_mp4(mp4))
+                paths.append(mp4)
+            dist = clip_distance(clips[0], clips[1])
+            steps["prompt_response"] = {
+                "status": ("pass" if dist >= 2.0 else
+                           "warn" if dist >= 0.5 else "fail"),
+                "prompts": prompts, "seed": args.seed,
+                "clip_distance": round(dist, 3),
+                "motion": [round(motion_mean_absdiff(c), 3)
+                           for c in clips],
+                "artifacts": paths,
+                "note": ("distance < 0.5 = the two prompts produced "
+                         "near-identical videos; check the "
+                         "checkpoint's tokenizer vocabulary coverage "
+                         "of the prompt words"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            steps["prompt_response"] = {"status": "fail",
+                                        "error": str(exc)}
+    else:
+        steps["prompt_response"] = {
+            "status": "skipped",
+            "reason": ("needs --dit-ckpt and --vae-ckpt; on CPU the "
+                       "paired sampling runs for the tiny preset "
+                       "only (rerun with --device cuda for larger)")}
+
     import torch
 
     report = {
@@ -256,7 +366,18 @@ def main() -> int:
                                   / (1024 * 1024), 1)
                             if torch.cuda.is_available() else None),
         "overall_status": _worst([s["status"] for s in steps.values()]),
+        # End-to-end generation is verified ONLY when a DiT checkpoint
+        # was supplied AND prompt-conditioned sampling passed with
+        # validated MP4s. A run whose sampling was skipped is at most a
+        # healthy PARTIAL evaluation — never a successful generation
+        # test. If a checkpoint WAS supplied and sampling did not pass,
+        # the run fails outright (enforced below): that evidence was
+        # requested and not produced.
+        "end_to_end_generation_verified": bool(
+            args.dit_ckpt and steps["dit_samples"]["status"] == "pass"),
     }
+    if args.dit_ckpt and steps["dit_samples"]["status"] != "pass":
+        report["overall_status"] = "fail"
 
     if args.compare:
         with open(args.compare, encoding="utf-8") as f:

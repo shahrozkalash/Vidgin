@@ -27,6 +27,36 @@ import math
 import torch
 
 
+def ssim_index(x: torch.Tensor, y: torch.Tensor, window: int = 11) -> float:
+    """Mean SSIM between two clip batches [B, 3, T, H, W] in [-1, 1].
+
+    Standard SSIM (Wang et al.) on grayscale frames with a uniform
+    window — implemented in pure PyTorch so no skimage dependency is
+    introduced. SSIM complements PSNR: it tracks structural similarity
+    (contrast/structure terms) rather than raw pixel error, so it
+    notices blur that MSE tolerates. Neither metric measures perceived
+    quality; both are reported, and the side-by-side previews remain
+    the ground truth for eyeballs. 1.0 = identical.
+    """
+    import torch.nn.functional as F
+
+    a = (x.float().mean(dim=1) * 0.5 + 0.5)  # [B, T, H, W] in [0, 1]
+    b = (y.float().mean(dim=1) * 0.5 + 0.5)
+    bb, tt, h, w = a.shape
+    a = a.reshape(bb * tt, 1, h, w)
+    b = b.reshape(bb * tt, 1, h, w)
+    pad = window // 2
+    mu_a = F.avg_pool2d(F.pad(a, [pad] * 4, mode="reflect"), window, stride=1)
+    mu_b = F.avg_pool2d(F.pad(b, [pad] * 4, mode="reflect"), window, stride=1)
+    var_a = F.avg_pool2d(F.pad(a * a, [pad] * 4, mode="reflect"), window, stride=1) - mu_a ** 2
+    var_b = F.avg_pool2d(F.pad(b * b, [pad] * 4, mode="reflect"), window, stride=1) - mu_b ** 2
+    cov = F.avg_pool2d(F.pad(a * b, [pad] * 4, mode="reflect"), window, stride=1) - mu_a * mu_b
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    ssim = ((2 * mu_a * mu_b + c1) * (2 * cov + c2)) / (
+        (mu_a ** 2 + mu_b ** 2 + c1) * (var_a + var_b + c2))
+    return float(ssim.mean())
+
+
 @torch.no_grad()
 def measure_latent_stats(vae, dataset, max_clips: int = 256,
                          batch_size: int = 8, device: str = "cpu") -> dict:
@@ -47,6 +77,8 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
     count_c = 0        # elements per channel
     mse_sum = 0.0
     mse_count = 0
+    ssim_sum = 0.0
+    ssim_batches = 0
     nonfinite_latents = 0   # mu elements that are NaN/Inf (broken VAE)
     nonfinite_recon = 0
 
@@ -68,6 +100,9 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
         nonfinite_recon += int((~torch.isfinite(recon)).sum())
         mse_sum += float(((recon - x) ** 2).sum().double())
         mse_count += x.numel()
+        if torch.isfinite(recon).all() and torch.isfinite(x).all():
+            ssim_sum += ssim_index(recon, x)
+            ssim_batches += 1
 
     mean_c = sum_c / count_c
     var_c = (sumsq_c / count_c) - mean_c ** 2
@@ -94,6 +129,8 @@ def measure_latent_stats(vae, dataset, max_clips: int = 256,
                                      if global_std > 0 else None),
         "recon_mse": round(mse, 8),
         "recon_psnr_db": (round(psnr, 3) if math.isfinite(psnr) else None),
+        "recon_ssim": (round(ssim_sum / ssim_batches, 4)
+                       if ssim_batches else None),
         "latent_finite": nonfinite_latents == 0,
         "nonfinite_latent_values": nonfinite_latents,
         "nonfinite_recon_values": nonfinite_recon,

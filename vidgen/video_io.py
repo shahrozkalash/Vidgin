@@ -81,18 +81,31 @@ def write_mp4(frames: np.ndarray, path: str, fps: float = 16.0) -> str:
     """
     uint8 = frames_to_uint8(frames)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    errors = []
-    for writer in (_write_mp4_cv2, _write_mp4_ffmpeg):
-        try:
-            writer(uint8, path, fps)
-            break
-        except Exception as exc:  # try the next backend
-            errors.append(f"{writer.__name__}: {exc}")
-    else:
-        raise RuntimeError("MP4 export failed: " + "; ".join(errors))
-    count, _w, _h = probe_mp4(path)
-    if count != uint8.shape[0]:
-        raise RuntimeError(
-            f"MP4 verification failed: wrote {uint8.shape[0]} frames, "
-            f"read back {count}")
+    # Write to a temp file in the SAME directory, verify it, then
+    # atomically rename onto the destination. Previously a failed
+    # first writer left its partial file at the destination (where it
+    # could be mistaken for a finished export) and a verification
+    # failure left the bad file in place; now a failed export leaves
+    # nothing behind but the exception.
+    tmp = f"{path}.tmp-{os.getpid()}.mp4"
+    try:
+        errors = []
+        for writer in (_write_mp4_cv2, _write_mp4_ffmpeg):
+            try:
+                writer(uint8, tmp, fps)
+                break
+            except Exception as exc:  # try the next backend
+                errors.append(f"{writer.__name__}: {exc}")
+        else:
+            raise RuntimeError("MP4 export failed: " + "; ".join(errors))
+        count, _w, _h = probe_mp4(tmp)
+        if count != uint8.shape[0]:
+            raise RuntimeError(
+                f"MP4 verification failed: wrote {uint8.shape[0]} frames, "
+                f"read back {count}")
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return path
