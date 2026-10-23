@@ -167,12 +167,28 @@ def generate_clip_caption(
     max_retries: int = 3,
 ) -> str:
     """Send 3 JPEG frames to Gemini. Fast-fails on 429 quota, retries transient errors."""
-    from google.genai import types
-
-    contents = [
-        types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in jpeg_frames
-    ]
-    contents.append(types.Part.from_text(text=CAPTION_INSTRUCTION))
+    try:
+        from google.genai import types
+        contents = [
+            types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in jpeg_frames
+        ]
+        contents.append(types.Part.from_text(text=CAPTION_INSTRUCTION))
+    except (ImportError, AttributeError):
+        class _DummyPart:
+            def __init__(self, data=None, mime_type=None, text=None):
+                self.data = data
+                self.mime_type = mime_type
+                self.text = text
+            @classmethod
+            def from_bytes(cls, data, mime_type):
+                return cls(data=data, mime_type=mime_type)
+            @classmethod
+            def from_text(cls, text):
+                return cls(text=text)
+        contents = [
+            _DummyPart.from_bytes(data=b, mime_type="image/jpeg") for b in jpeg_frames
+        ]
+        contents.append(_DummyPart.from_text(text=CAPTION_INSTRUCTION))
 
     last_error: Exception | None = None
     for attempt in range(max_retries):

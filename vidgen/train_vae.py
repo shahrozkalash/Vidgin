@@ -199,9 +199,7 @@ class VAETrainer:
         else:
             skipped_nonfinite = True
             self.opt.zero_grad()
-        # Scheduler tracks optimizer steps only — it must not
-        # advance on a skipped non-finite step (see train.py).
-        if self.sched is not None and not skipped_nonfinite:
+        if not skipped_nonfinite and self.sched is not None:
             self.sched.step()
         secs = time.perf_counter() - t0
         samples = last_batch * self.world_size * self.grad_accum
@@ -277,8 +275,7 @@ class VAETrainer:
         # ...which a fresh run must not keep. Single-process this is the
         # original seed_everything(self.seed); rank_seed(seed, 0) == seed.
         seed_everything(rank_seed(self.seed, self.rank))
-        if payload.get("kind") not in ("vae", "vae-weights-fp16") \
-                or "vae" not in payload:
+        if payload.get("kind") != "vae" or "vae" not in payload:
             raise ValueError(
                 f"{path} is not a VAE checkpoint (kind={payload.get('kind')!r})")
         unwrap_model(self.vae).load_state_dict(payload["vae"])  # strict load
@@ -385,11 +382,6 @@ def main() -> None:
                     help="mixed precision via autocast (default none)")
     args = ap.parse_args()
 
-    # Same rule as the DiT CLI: resuming without an explicit
-    # --ckpt-dir writes next to the resumed checkpoint, not into the
-    # fresh-run default folder.
-    if args.resume and args.ckpt_dir == "checkpoints/tiny-vae":
-        args.ckpt_dir = os.path.dirname(os.path.abspath(args.resume))
     if args.resume and args.init_weights:
         ap.error("--resume and --init-weights are mutually exclusive: "
                  "resume continues a run, warm start begins a fresh one")

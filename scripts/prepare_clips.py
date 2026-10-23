@@ -272,37 +272,6 @@ def decode_video(path: str, want_frames: int | None = None) -> np.ndarray:
 
 
 # ------------------------------------------------------------- per-video io
-def _download_curl(url: str, dest: str) -> bool:
-    """Download via the curl binary, RESUMING after truncation.
-
-    Measured 2026-10-23 on this machine's egress: python urllib reads are
-    cut mid-file again and again (207 of 250 URLs failed 5 retries each in
-    one local chunk), while curl fetched the same URLs complete in 1-2 s.
-    curl also supports `-C -` resume, so a cut transfer continues where it
-    stopped instead of restarting from zero. Returns True on a complete
-    download (curl exit 0 with -f); False if curl is unavailable or every
-    attempt failed, so the caller can fall back to urllib.
-    """
-    import subprocess
-
-    if not shutil.which("curl"):
-        return False
-    for attempt in range(8):
-        try:
-            r = subprocess.run(
-                ["curl", "-f", "-sS", "--connect-timeout", "20",
-                 "--max-time", str(max(TIMEOUT, 120)),
-                 "-C", "-", "-o", dest, url],
-                capture_output=True, timeout=max(TIMEOUT, 120) + 30,
-            )
-            if r.returncode == 0 and os.path.getsize(dest) > 0:
-                return True
-        except Exception:
-            pass
-        time.sleep(1 + attempt)
-    return False
-
-
 def download(url: str, dest: str) -> None:
     """Download a URL to dest, VERIFYING the byte count, with retries.
 
@@ -314,12 +283,7 @@ def download(url: str, dest: str) -> None:
     local chunk before this was caught). Now: when the server sends a
     Content-Length, the file on disk must match it exactly, and any
     short read (including http.client.IncompleteRead) is retried.
-
-    Speed fix 2026-10-23: try curl first (see _download_curl) — on the
-    local prep machine it succeeds where urllib is truncated repeatedly.
     """
-    if _download_curl(url, dest):
-        return
     import http.client
 
     last = None
