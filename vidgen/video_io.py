@@ -24,45 +24,22 @@ def frames_to_uint8(frames: np.ndarray) -> np.ndarray:
 
 
 def probe_mp4(path: str) -> tuple[int, int, int]:
-    """(frame_count, width, height) of an MP4, read with OpenCV or ffprobe."""
-    try:
-        import cv2
+    """(frame_count, width, height) of an MP4, read with OpenCV."""
+    import cv2
 
-        cap = cv2.VideoCapture(path)
-        if cap.isOpened():
-            count = 0
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            while True:
-                ok, _frame = cap.read()
-                if not ok:
-                    break
-                count += 1
-            cap.release()
-            if count > 0:
-                return count, width, height
-    except Exception:
-        pass
-
-    # ffprobe fallback
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-count_packets",
-        "-show_entries", "stream=width,height,nb_read_packets",
-        "-of", "csv=p=0", path,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode == 0 and proc.stdout.strip():
-        parts = [p.strip() for p in proc.stdout.strip().split(",") if p.strip()]
-        if len(parts) >= 3:
-            try:
-                width = int(parts[0])
-                height = int(parts[1])
-                count = int(parts[2])
-                return count, width, height
-            except ValueError:
-                pass
-    raise ValueError(f"cannot open or probe video file: {path}")
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise ValueError(f"cannot open video file: {path}")
+    count = 0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    while True:
+        ok, _frame = cap.read()
+        if not ok:
+            break
+        count += 1
+    cap.release()
+    return count, width, height
 
 
 def _write_mp4_cv2(uint8: np.ndarray, path: str, fps: float) -> None:
@@ -104,18 +81,31 @@ def write_mp4(frames: np.ndarray, path: str, fps: float = 16.0) -> str:
     """
     uint8 = frames_to_uint8(frames)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    errors = []
-    for writer in (_write_mp4_cv2, _write_mp4_ffmpeg):
-        try:
-            writer(uint8, path, fps)
-            break
-        except Exception as exc:  # try the next backend
-            errors.append(f"{writer.__name__}: {exc}")
-    else:
-        raise RuntimeError("MP4 export failed: " + "; ".join(errors))
-    count, _w, _h = probe_mp4(path)
-    if count != uint8.shape[0]:
-        raise RuntimeError(
-            f"MP4 verification failed: wrote {uint8.shape[0]} frames, "
-            f"read back {count}")
+    # Write to a temp file in the SAME directory, verify it, then
+    # atomically rename onto the destination. Previously a failed
+    # first writer left its partial file at the destination (where it
+    # could be mistaken for a finished export) and a verification
+    # failure left the bad file in place; now a failed export leaves
+    # nothing behind but the exception.
+    tmp = f"{path}.tmp-{os.getpid()}.mp4"
+    try:
+        errors = []
+        for writer in (_write_mp4_cv2, _write_mp4_ffmpeg):
+            try:
+                writer(uint8, tmp, fps)
+                break
+            except Exception as exc:  # try the next backend
+                errors.append(f"{writer.__name__}: {exc}")
+        else:
+            raise RuntimeError("MP4 export failed: " + "; ".join(errors))
+        count, _w, _h = probe_mp4(tmp)
+        if count != uint8.shape[0]:
+            raise RuntimeError(
+                f"MP4 verification failed: wrote {uint8.shape[0]} frames, "
+                f"read back {count}")
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return path

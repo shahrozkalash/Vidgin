@@ -66,7 +66,7 @@ def main() -> int:
     device = resolve_device(args.device)
     cfg = get_preset(args.preset)
     payload = load_checkpoint(args.vae_ckpt, map_location=str(device))
-    if payload.get("kind") != "vae":
+    if payload.get("kind") not in ("vae", "vae-weights-fp16"):
         print(f"error: {args.vae_ckpt} is not a VAE checkpoint", file=sys.stderr)
         return 2
     vae = CausalVAE().to(device)

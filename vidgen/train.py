@@ -303,7 +303,12 @@ class DiTTrainer:
             # stepping, so the weights stay exactly as they were.
             skipped_nonfinite = True
             self.opt.zero_grad()
-        if not skipped_nonfinite and self.sched is not None:
+        # The scheduler tracks OPTIMIZER steps: on a skipped
+        # (non-finite) step the weights did not move, so the schedule
+        # must not advance either — otherwise a burst of bad steps
+        # burns the LR horizon without any training happening
+        # (found in the 2026-10-23 repair audit).
+        if self.sched is not None and not skipped_nonfinite:
             self.sched.step()
 
         secs = time.perf_counter() - t0
@@ -610,6 +615,14 @@ def main() -> None:
                          "so text-only generation stays strong")
     args = ap.parse_args()
 
+    # Resuming without an explicit --ckpt-dir continues writing next
+    # to the checkpoint being resumed — never into the fresh-run
+    # default folder, where the continued run's checkpoints would be
+    # scattered away from the run they belong to (found live in the
+    # 2026-10-23 Stage B validation: a resumed run wrote to
+    # checkpoints/tiny-dit instead of the original directory).
+    if args.resume and args.ckpt_dir == "checkpoints/tiny-dit":
+        args.ckpt_dir = os.path.dirname(os.path.abspath(args.resume))
     if args.resume and args.init_weights:
         ap.error("--resume and --init-weights are mutually exclusive: "
                  "resume continues a run, weights-only init begins a "

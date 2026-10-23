@@ -30,6 +30,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 try:
     import torch
     HAS_TORCH = True
