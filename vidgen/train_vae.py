@@ -277,7 +277,8 @@ class VAETrainer:
         # ...which a fresh run must not keep. Single-process this is the
         # original seed_everything(self.seed); rank_seed(seed, 0) == seed.
         seed_everything(rank_seed(self.seed, self.rank))
-        if payload.get("kind") != "vae" or "vae" not in payload:
+        if payload.get("kind") not in ("vae", "vae-weights-fp16") \
+                or "vae" not in payload:
             raise ValueError(
                 f"{path} is not a VAE checkpoint (kind={payload.get('kind')!r})")
         unwrap_model(self.vae).load_state_dict(payload["vae"])  # strict load
