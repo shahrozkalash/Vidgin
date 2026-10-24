@@ -7,14 +7,18 @@
 # GPU install (Kaggle/Colab T4 or any CUDA machine):
 #   pip install -r requirements.txt
 #
-# Pillow is optional (sample.py writes PNG/GIF when it is importable):
-#   pip install pillow
-
+# Core training dependencies
 torch
 numpy
 pytest
-pillow
 scipy
 soundfile
 opencv-python-headless
+
+# Captioning dependencies (prep-only, optional):
+# - google-genai for Gemini vision captioning ($0 free tier)
+# - transformers and pillow for local vision captioning (Salesforce/blip-image-captioning-base)
+pillow
 google-genai
+transformers
+

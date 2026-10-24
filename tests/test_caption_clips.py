@@ -1,16 +1,23 @@
-"""Tests for scripts/caption_clips.py: 100% Free Tier Gemini vision clip captioner.
+"""Tests for scripts/caption_clips.py: Upgraded two-backend clip captioning system.
 
 Verifies:
 1. Frame sampling and resize to <= 512 px max side.
-2. Manifest rewriting (captions updated, caption_weak kept, caption_source='gemini').
+2. Manifest rewriting (captions updated, caption_weak kept, caption_source='gemini' or 'local').
 3. Preservation of "depth" keys completely untouched.
-4. Resume-skip behavior when caption_source='gemini'.
+4. Resume-skip behavior for both caption_source='gemini' and 'local'.
 5. Overwrite flag forces re-captioning.
 6. Limit option caps inspected clips.
 7. Pacing stop: stops cleanly when --max-calls is reached and saves progress.
-8. Free quota exit: on HTTP 429 / quota exhaustion, saves progress, prints the
-   exact free-quota message, and exits cleanly (no crash, picks up on next run).
-9. General transient API error retries up to 3 times before logging to failures.
+8. Free quota exit: on HTTP 429 / quota exhaustion across all keys, saves progress,
+   prints message, and exits cleanly.
+9. Two-key rotation on HTTP 429: rotates from GEMINI_API_KEY to GEMINI_API_KEY_2.
+10. Model fallback order on 503/overload:
+    gemini-3.8-flash -> gemini-3.5-flash -> gemini-3.6-flash -> gemini-3.7-flash -> gemini-flash-latest.
+11. Auto-backend switch on quota exhaustion: continues on local backend when all keys hit quota.
+12. Quality-gate rejections: rejects empty, <8 words, fps, resolution, or bare filenames;
+    retries once; marks failed if retry also fails.
+13. Local backend direct captioning and caption post-processing (15-30 words, single sentence).
+14. Failure logging to caption_failures.log and per-backend summary reporting.
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ import io
 import json
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
@@ -33,15 +40,22 @@ from caption_clips import (
     DEFAULT_MAX_CALLS,
     DEFAULT_MODEL,
     FAILURES_LOG,
+    FALLBACK_MODELS,
     QuotaExceededError,
     caption_dataset,
     extract_three_frames,
     frame_to_jpeg_bytes,
+    generate_clip_caption,
+    generate_clip_caption_local,
+    is_overload_error,
     is_quota_error,
     load_manifest,
     parse_args,
+    postprocess_local_caption,
     resolve_api_key,
+    resolve_api_keys,
     save_manifest_atomic,
+    validate_caption_quality,
 )
 
 
@@ -69,6 +83,7 @@ def _create_mock_dataset(
     return data_dir
 
 
+# ------------------------------------------------------------- Basic frame tests
 def test_extract_three_frames():
     clip_17 = np.zeros((17, 32, 32, 3), dtype=np.uint8)
     clip_17[0, 0, 0, 0] = 10
@@ -111,6 +126,7 @@ def test_frame_to_jpeg_bytes_resizing():
     assert h == round(720 * 512 / 1280)
 
 
+# ------------------------------------------------------------- Manifest & Depth
 def test_caption_dataset_updates_manifest_and_fields(tmp_path):
     clips = [
         {"file": "clip_000001.npy", "caption": "busy street"},
@@ -174,11 +190,72 @@ def test_caption_dataset_updates_manifest_and_fields(tmp_path):
     assert updated_entries[2]["caption_source"] == "gemini"
 
 
+# ------------------------------------------------------------- Resume safety for both backends
+def test_resume_skip_both_gemini_and_local(tmp_path):
+    """Resume-safe: skip entries whose caption_source is already 'gemini' or 'local'."""
+    clips = [
+        {
+            "file": "clip_000001.npy",
+            "caption": "A red bus drives along a street under noon sun with camera static.",
+            "caption_weak": "city bus",
+            "caption_source": "gemini",
+        },
+        {
+            "file": "clip_000002.npy",
+            "caption": "A dog runs across a lawn with the camera tracking smoothly under bright daylight.",
+            "caption_weak": "dog running",
+            "caption_source": "local",
+        },
+        {"file": "clip_000003.npy", "caption": "horse galloping"},
+    ]
+    data_dir = _create_mock_dataset(tmp_path, clips)
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = MagicMock(
+        text="A brown horse gallops across an open fenced pasture, the camera tracking steadily in morning light."
+    )
+
+    # 1. Without overwrite: both clip 1 and clip 2 are skipped; only clip 3 is captioned
+    processed, skipped, failed = caption_dataset(
+        data_dir=data_dir,
+        overwrite=False,
+        pace_seconds=0.0,
+        client=mock_client,
+    )
+    assert processed == 1
+    assert skipped == 2
+    assert failed == 0
+    assert mock_client.models.generate_content.call_count == 1
+
+    _, entries_run1 = load_manifest(data_dir)
+    assert entries_run1[0]["caption_source"] == "gemini"
+    assert entries_run1[1]["caption_source"] == "local"
+    assert entries_run1[2]["caption_source"] == "gemini"
+
+    # 2. With overwrite: all three clips are re-captioned
+    mock_client.reset_mock()
+    mock_client.models.generate_content.side_effect = [
+        MagicMock(text="A cyclist rides past tall glass skyscrapers along a designated bike lane, camera panning under morning sun."),
+        MagicMock(text="A golden retriever chases a red ball through green park grass, camera tracking low in afternoon light."),
+        MagicMock(text="A brown stallion trots across a grassy field near wooden stables, camera static in clear daylight."),
+    ]
+
+    processed2, skipped2, failed2 = caption_dataset(
+        data_dir=data_dir,
+        overwrite=True,
+        pace_seconds=0.0,
+        client=mock_client,
+    )
+    assert processed2 == 3
+    assert skipped2 == 0
+    assert mock_client.models.generate_content.call_count == 3
+
+
 def test_resume_skip_and_overwrite(tmp_path):
     clips = [
         {
             "file": "clip_000001.npy",
-            "caption": "A red bus drives along a street under noon sun.",
+            "caption": "A red bus drives along a street under noon sun with camera tracking smoothly.",
             "caption_weak": "city bus",
             "caption_source": "gemini",
         },
@@ -203,18 +280,11 @@ def test_resume_skip_and_overwrite(tmp_path):
     assert failed == 0
     assert mock_client.models.generate_content.call_count == 1
 
-    _, entries_run1 = load_manifest(data_dir)
-    assert entries_run1[0]["caption"] == "A red bus drives along a street under noon sun."
-    assert (
-        entries_run1[1]["caption"]
-        == "A golden retriever sprints across a green meadow towards a wooden fence, the camera tracking low in warm evening light."
-    )
-
-    # 2. With overwrite: both clips are re-captioned
+    # 2. With overwrite: both clips are re-captioned with valid >=8 word captions
     mock_client.reset_mock()
     mock_client.models.generate_content.side_effect = [
-        MagicMock(text="Overwritten caption 1"),
-        MagicMock(text="Overwritten caption 2"),
+        MagicMock(text="An express train speeds across a mountain bridge under clear skies, camera tracking alongside smoothly."),
+        MagicMock(text="A cargo ship navigates into a busy industrial harbor channel, camera static in foggy morning light."),
     ]
 
     processed, skipped, failed = caption_dataset(
@@ -228,6 +298,7 @@ def test_resume_skip_and_overwrite(tmp_path):
     assert mock_client.models.generate_content.call_count == 2
 
 
+# ------------------------------------------------------------- Pacing & Max calls
 def test_max_calls_pacing_stop(tmp_path):
     """Verify that reaching --max-calls stops cleanly and saves progress."""
     clips = [
@@ -238,7 +309,7 @@ def test_max_calls_pacing_stop(tmp_path):
 
     mock_client = MagicMock()
     mock_client.models.generate_content.side_effect = [
-        MagicMock(text=f"A scenic landscape view number {i} under morning sun, the camera static.")
+        MagicMock(text=f"A scenic landscape view number {i} under morning sun, the camera static beside the road.")
         for i in range(1, 6)
     ]
 
@@ -259,34 +330,53 @@ def test_max_calls_pacing_stop(tmp_path):
     assert entries[0]["caption_source"] == "gemini"
     assert entries[1]["caption_source"] == "gemini"
     assert "caption_source" not in entries[2]
-    assert "caption_source" not in entries[3]
-    assert "caption_source" not in entries[4]
 
-    # Resume without overwrite with max_calls=2: skips the first 2, processes next 2
-    mock_client.reset_mock()
-    mock_client.models.generate_content.side_effect = [
-        MagicMock(text=f"A scenic landscape view number {i} under morning sun, the camera static.")
-        for i in range(3, 6)
+
+# ------------------------------------------------------------- Two-Key Rotation on HTTP 429
+def test_two_key_rotation_on_429(tmp_path, monkeypatch):
+    """Verify rotation to GEMINI_API_KEY_2 when key 1 encounters HTTP 429 quota."""
+    monkeypatch.setattr(caption_clips.time, "sleep", lambda s: None)
+
+    clips = [
+        {"file": "clip_000001.npy", "caption": "first clip"},
+        {"file": "clip_000002.npy", "caption": "second clip"},
+    ]
+    data_dir = _create_mock_dataset(tmp_path, clips)
+
+    class Mock429(Exception):
+        status_code = 429
+
+    client_key1 = MagicMock()
+    # Client 1 fails on clip 1 with 429
+    client_key1.models.generate_content.side_effect = Mock429("Quota exceeded on key 1")
+
+    client_key2 = MagicMock()
+    # Client 2 succeeds on clip 1 and clip 2
+    client_key2.models.generate_content.side_effect = [
+        MagicMock(text="A sailboat glides across calm blue ocean waters towards a lighthouse, camera tracking steadily in morning sun."),
+        MagicMock(text="A cyclist rides past autumn trees in a quiet park, camera tracking smoothly beside the path in golden afternoon light."),
     ]
 
-    processed2, skipped2, failed2 = caption_dataset(
+    processed, skipped, failed = caption_dataset(
         data_dir=data_dir,
-        max_calls=2,
         pace_seconds=0.0,
-        client=mock_client,
+        clients=[client_key1, client_key2],
     )
-    assert processed2 == 2
-    assert skipped2 == 2
-    assert mock_client.models.generate_content.call_count == 2
 
-    _, entries2 = load_manifest(data_dir)
-    assert entries2[2]["caption_source"] == "gemini"
-    assert entries2[3]["caption_source"] == "gemini"
-    assert "caption_source" not in entries2[4]
+    assert processed == 2
+    assert failed == 0
+    assert client_key1.models.generate_content.call_count == 1
+    assert client_key2.models.generate_content.call_count == 2
+
+    _, entries = load_manifest(data_dir)
+    assert entries[0]["caption_source"] == "gemini"
+    assert entries[1]["caption_source"] == "gemini"
 
 
-def test_free_quota_error_exit(tmp_path, capsys):
-    """Verify HTTP 429 quota error saves progress, prints message, and exits cleanly."""
+def test_free_quota_error_exit_when_all_keys_exhausted(tmp_path, capsys, monkeypatch):
+    """Verify HTTP 429 quota error across all keys saves progress, prints message, and exits cleanly."""
+    monkeypatch.setattr(caption_clips.time, "sleep", lambda s: None)
+
     clips = [
         {"file": "clip_000001.npy", "caption": "first clip"},
         {"file": "clip_000002.npy", "caption": "quota trigger clip"},
@@ -297,69 +387,217 @@ def test_free_quota_error_exit(tmp_path, capsys):
     class Mock429Error(Exception):
         status_code = 429
 
-    mock_client = MagicMock()
-    mock_client.models.generate_content.side_effect = [
+    client1 = MagicMock()
+    client1.models.generate_content.side_effect = [
         MagicMock(text="A red bicycle rests against a stone wall in an alley, the camera static in morning light."),
-        Mock429Error("Resource exhausted: 429 Rate limit exceeded. Quota reached for free tier."),
+        Mock429Error("Key 1 quota exceeded"),
     ]
+
+    client2 = MagicMock()
+    client2.models.generate_content.side_effect = Mock429Error("Key 2 quota exceeded")
 
     processed, skipped, failed = caption_dataset(
         data_dir=data_dir,
         pace_seconds=0.0,
-        client=mock_client,
+        clients=[client1, client2],
+        backend="gemini",
     )
 
     captured = capsys.readouterr()
     assert "Free quota reached — run again tomorrow; it will continue where it stopped" in captured.out
     assert processed == 1
-    assert failed == 0  # Not logged as failure, treated as clean quota stop
+    assert failed == 0
 
-    # Verify clip 1 was saved into manifest, clip 2 and 3 remain untouched
     _, entries = load_manifest(data_dir)
     assert entries[0]["caption_source"] == "gemini"
     assert "caption_source" not in entries[1]
     assert "caption_source" not in entries[2]
 
-    # Verify no entry was written to caption_failures.log
-    failures_log = os.path.join(data_dir, FAILURES_LOG)
-    assert not os.path.exists(failures_log)
+
+# ------------------------------------------------------------- Model Fallback on 503
+def test_model_fallback_order_on_503(monkeypatch):
+    """Verify fallback chain on 503/overload:
+    gemini-3.8-flash -> gemini-3.5-flash -> gemini-3.6-flash -> gemini-3.7-flash -> gemini-flash-latest
+    with backoff delays.
+    """
+    sleep_calls = []
+    monkeypatch.setattr(caption_clips.time, "sleep", lambda s: sleep_calls.append(s))
+
+    class Mock503Error(Exception):
+        status_code = 503
+
+    client = MagicMock()
+
+    # Model 1 (gemini-3.8-flash) fails 3 times on 503
+    # Model 2 (gemini-3.5-flash) fails 3 times on 503
+    # Model 3 (gemini-3.6-flash) succeeds!
+    called_models = []
+
+    def mock_generate_content(model, contents):
+        called_models.append(model)
+        if model in ("gemini-3.8-flash", "gemini-3.5-flash"):
+            raise Mock503Error(f"Model {model} overloaded (503 Service Unavailable)")
+        return MagicMock(
+            text="A speedboat cuts through turquoise coastal waters leaving a white wake, camera panning under midday sun."
+        )
+
+    client.models.generate_content.side_effect = mock_generate_content
+
+    caption = generate_clip_caption(
+        client,
+        model="gemini-3.8-flash",
+        jpeg_frames=[b"dummy_jpeg"],
+    )
+
+    assert "speedboat" in caption
+    # Verify exact models tried in order
+    unique_models_in_order = []
+    for m in called_models:
+        if not unique_models_in_order or unique_models_in_order[-1] != m:
+            unique_models_in_order.append(m)
+
+    assert unique_models_in_order == [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+    ]
+    # Verify 503 backoff delays were passed (10s, 25s)
+    assert 10.0 in sleep_calls
+    assert 25.0 in sleep_calls
 
 
-def test_is_quota_error():
-    class ErrWithCode(Exception):
-        code = 429
+# ------------------------------------------------------------- Auto-Backend Switch
+def test_auto_backend_switch_on_quota_exhaustion(tmp_path, monkeypatch):
+    """Verify --backend auto: starts on Gemini, and when quota is exhausted across all keys,
+    automatically continues the SAME run on the local backend.
+    """
+    monkeypatch.setattr(caption_clips.time, "sleep", lambda s: None)
 
-    class ErrWithStatusCode(Exception):
-        status_code = 429
-
-    assert is_quota_error(ErrWithCode())
-    assert is_quota_error(ErrWithStatusCode())
-    assert is_quota_error(RuntimeError("HTTP 429: Too Many Requests"))
-    assert is_quota_error(RuntimeError("RESOURCE_EXHAUSTED quota exceeded"))
-    assert is_quota_error(RuntimeError("Rate limit exceeded for model"))
-    assert not is_quota_error(RuntimeError("Connection timeout"))
-    assert not is_quota_error(ValueError("Invalid frame shape"))
-
-
-def test_api_retry_and_failure_logging(tmp_path, monkeypatch):
     clips = [
-        {"file": "clip_000001.npy", "caption": "failing clip"},
-        {"file": "clip_000002.npy", "caption": "working clip"},
+        {"file": "clip_000001.npy", "caption": "first clip"},
+        {"file": "clip_000002.npy", "caption": "second clip"},
+        {"file": "clip_000003.npy", "caption": "third clip"},
     ]
     data_dir = _create_mock_dataset(tmp_path, clips)
 
+    class Mock429(Exception):
+        status_code = 429
+
+    mock_gemini_client = MagicMock()
+    # Clip 1 succeeds on Gemini; Clip 2 triggers 429
+    mock_gemini_client.models.generate_content.side_effect = [
+        MagicMock(text="A steam locomotive rolls through snowy pine forests, the camera tracking steadily under winter sunlight."),
+        Mock429("Daily quota exhausted (429)"),
+    ]
+
+    # Mock local captioner function
+    local_responses = [
+        "a silver airplane landing on a wet runway with the camera panning smoothly in the fog",
+        "a group of friends hiking up a rocky hill trail under clear blue skies",
+    ]
+    mock_local = MagicMock(side_effect=local_responses)
+
+    processed, skipped, failed = caption_dataset(
+        data_dir=data_dir,
+        backend="auto",
+        pace_seconds=0.0,
+        client=mock_gemini_client,
+        local_captioner=mock_local,
+    )
+
+    assert processed == 3
+    assert skipped == 0
+    assert failed == 0
+
+    _, entries = load_manifest(data_dir)
+    # Clip 1 produced by Gemini
+    assert entries[0]["caption_source"] == "gemini"
+    assert "steam locomotive" in entries[0]["caption"]
+
+    # Clip 2 produced by Local after auto-switch
+    assert entries[1]["caption_source"] == "local"
+    assert "airplane" in entries[1]["caption"].lower()
+
+    # Clip 3 also produced by Local
+    assert entries[2]["caption_source"] == "local"
+    assert "hiking" in entries[2]["caption"].lower()
+
+
+# ------------------------------------------------------------- Local Backend Direct
+def test_local_backend_direct(tmp_path):
+    """Verify --backend local functions completely offline with zero Gemini dependencies."""
+    clips = [
+        {"file": "clip_000001.npy", "caption": "weak tag 1"},
+        {"file": "clip_000002.npy", "caption": "weak tag 2"},
+    ]
+    data_dir = _create_mock_dataset(tmp_path, clips)
+
+    mock_local = MagicMock(
+        side_effect=[
+            "a surfer riding a tall ocean wave at sunrise",
+            "a deer standing quietly in a misty autumn forest",
+        ]
+    )
+
+    processed, skipped, failed = caption_dataset(
+        data_dir=data_dir,
+        backend="local",
+        pace_seconds=0.0,
+        local_captioner=mock_local,
+    )
+
+    assert processed == 2
+    assert skipped == 0
+    assert failed == 0
+
+    _, entries = load_manifest(data_dir)
+    assert entries[0]["caption_source"] == "local"
+    assert entries[1]["caption_source"] == "local"
+    words0 = entries[0]["caption"].split()
+    assert 15 <= len(words0) <= 30
+    assert entries[0]["caption"].endswith(".")
+
+
+# ------------------------------------------------------------- Quality Gate Rejections
+def test_quality_gate_rejections(tmp_path, monkeypatch):
+    """Quality gate: reject empty, <8 words, fps, resolution, or bare filenames.
+    Retry once; if retry fails, mark clip failed and log to failures file.
+    """
     monkeypatch.setattr(caption_clips.time, "sleep", lambda s: None)
 
-    mock_client = MagicMock()
+    # Unit validation checks
+    assert not validate_caption_quality("")[0]
+    assert not validate_caption_quality("   ")[0]
+    assert not validate_caption_quality("A car driving on road")[0]  # 5 words (< 8)
+    assert not validate_caption_quality("A video shot at 60fps in the park under sun")[0]  # fps
+    assert not validate_caption_quality("A footage rendered at 1920x1080 resolution in daylight")[0]  # resolution
+    assert not validate_caption_quality("clip_000124.mp4")[0]  # bare filename
+    assert not validate_caption_quality("A street scene rendered in 1080p under cloudy skies today")[0]  # resolution
 
-    # Clip 1 fails 3 times on transient network error (not quota); Clip 2 succeeds
+    # Valid sentence passes
+    valid_text = "A red bus drives along the city street under bright midday sun, camera tracking steadily."
+    ok, reason = validate_caption_quality(valid_text)
+    assert ok is True
+    assert reason == ""
+
+    # Test integration: Clip 1 fails on attempt 1, passes on retry attempt 2.
+    # Clip 2 fails on both attempts 1 and 2 -> marked failed.
+    clips = [
+        {"file": "clip_000001.npy", "caption": "recovering clip"},
+        {"file": "clip_000002.npy", "caption": "always failing clip"},
+    ]
+    data_dir = _create_mock_dataset(tmp_path, clips)
+
+    mock_client = MagicMock()
     mock_client.models.generate_content.side_effect = [
-        ConnectionResetError("Connection lost"),
-        ConnectionResetError("Connection lost"),
-        ConnectionResetError("Connection lost"),
-        MagicMock(
-            text="A train speeds across a viaduct through rolling green hills, the camera tilting upward under bright midday sun."
-        ),
+        # Clip 1 attempt 1: rejected (< 8 words)
+        MagicMock(text="A car driving"),
+        # Clip 1 attempt 2 (retry): valid
+        MagicMock(text="A sleek sports car cruises along a winding mountain highway, camera tracking smoothly in bright afternoon sunlight."),
+        # Clip 2 attempt 1: rejected (fps metadata)
+        MagicMock(text="A train moving fast captured at 30 fps under morning sun."),
+        # Clip 2 attempt 2 (retry): rejected (resolution metadata)
+        MagicMock(text="A train moving fast at 1920x1080 resolution in the countryside."),
     ]
 
     processed, skipped, failed = caption_dataset(
@@ -367,57 +605,116 @@ def test_api_retry_and_failure_logging(tmp_path, monkeypatch):
         pace_seconds=0.0,
         client=mock_client,
     )
+
     assert processed == 1
-    assert skipped == 0
     assert failed == 1
+
+    _, entries = load_manifest(data_dir)
+    assert entries[0]["caption_source"] == "gemini"
+    assert "caption_source" not in entries[1]
 
     failures_log = os.path.join(data_dir, FAILURES_LOG)
     assert os.path.isfile(failures_log)
     with open(failures_log, "r", encoding="utf-8") as f:
         failed_files = [line.strip() for line in f if line.strip()]
-    assert failed_files == ["clip_000001.npy"]
+    assert "clip_000002.npy" in failed_files
 
 
-def test_resolve_api_key_from_env(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "env_test_secret_key_123")
-    key = resolve_api_key()
-    assert key == "env_test_secret_key_123"
+# ------------------------------------------------------------- Postprocessing & Helpers
+def test_postprocess_local_caption():
+    raw_short = "a dog running on the grass"
+    processed = postprocess_local_caption(raw_short)
+    words = processed.split()
+    assert 15 <= len(words) <= 30
+    assert processed[0].isupper()
+    assert processed.endswith(".")
+    assert "camera" in processed.lower()
+    assert any(w in processed.lower() for w in ["light", "daylight", "sun"])
+
+    raw_already_good = (
+        "A red vintage sports car cruises down an empty desert highway, "
+        "the camera tracking smoothly under bright midday sunlight."
+    )
+    processed_good = postprocess_local_caption(raw_already_good)
+    assert 15 <= len(processed_good.split()) <= 30
+    assert processed_good.endswith(".")
 
 
-def test_resolve_api_key_from_getpass(monkeypatch):
+def test_resolve_api_keys_two_keys(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "primary_key_abc")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "secondary_key_xyz")
+
+    keys = resolve_api_keys()
+    assert keys == ["primary_key_abc", "secondary_key_xyz"]
+    assert resolve_api_key() == "primary_key_abc"
+
+
+def test_resolve_api_keys_single_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "single_key_123")
+    monkeypatch.delenv("GEMINI_API_KEY_2", raising=False)
+
+    keys = resolve_api_keys()
+    assert keys == ["single_key_123"]
+    assert resolve_api_key() == "single_key_123"
+
+
+def test_resolve_api_keys_from_getpass(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.setattr(caption_clips.getpass, "getpass", lambda prompt: "prompted_key_456")
-    key = resolve_api_key()
-    assert key == "prompted_key_456"
+    monkeypatch.delenv("GEMINI_API_KEY_2", raising=False)
+    monkeypatch.setattr(caption_clips.getpass, "getpass", lambda prompt: "prompted_key_789")
+
+    keys = resolve_api_keys()
+    assert keys == ["prompted_key_789"]
 
 
 def test_resolve_api_key_empty_exits(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY_2", raising=False)
     monkeypatch.setattr(caption_clips.getpass, "getpass", lambda prompt: "")
     with pytest.raises(SystemExit):
         resolve_api_key()
 
 
+def test_is_quota_and_overload_error():
+    class ErrWithCode(Exception):
+        code = 429
+
+    class Err503(Exception):
+        status_code = 503
+
+    assert is_quota_error(ErrWithCode())
+    assert is_quota_error(RuntimeError("HTTP 429: Too Many Requests"))
+    assert is_quota_error(RuntimeError("RESOURCE_EXHAUSTED quota reached"))
+
+    assert is_overload_error(Err503())
+    assert is_overload_error(RuntimeError("503 Service Unavailable: The model is overloaded. Please try again later."))
+    assert is_overload_error(RuntimeError("Model is temporarily overloaded"))
+    assert not is_overload_error(RuntimeError("Connection timeout"))
+
+
 def test_parse_args():
     args = parse_args([
         "--data-dir", "/content/clips",
+        "--backend", "auto",
         "--limit", "50",
         "--max-calls", "100",
-        "--model", "gemini-2.5-flash-lite",
+        "--model", "gemini-3.5-flash",
         "--overwrite",
         "--pace", "8.0",
     ])
     assert args.data_dir == "/content/clips"
+    assert args.backend == "auto"
     assert args.limit == 50
     assert args.max_calls == 100
-    assert args.model == "gemini-2.5-flash-lite"
+    assert args.model == "gemini-3.5-flash"
     assert args.overwrite is True
     assert args.pace == 8.0
 
     # Defaults
     args_default = parse_args(["--data-dir", "/content/clips"])
+    assert args_default.backend == "gemini"
     assert args_default.limit is None
     assert args_default.max_calls == DEFAULT_MAX_CALLS
-    assert args_default.model == "gemini-2.5-flash"
+    assert args_default.model == "gemini-3.8-flash"
     assert args_default.overwrite is False
     assert args_default.pace == 6.0

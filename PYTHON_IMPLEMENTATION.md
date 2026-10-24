@@ -41,7 +41,7 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `scripts/prepare_clips.py` | Part 1 | Colab-oriented CLI: downloads stock videos (Pixabay API via `PIXABAY_API_KEY` env var — recommended, free key issued instantly; Pexels API via `PEXELS_API_KEY` — only if you already have a key, since Pexels has paused issuing new ones; or `--source urls` with direct URLs) → decode (cv2, else imageio) → center 17-frame window → square crop → 64×64 → quality/dedupe filters → `.npy` + captioned manifest; per-video temp-dir cleanup; prints kept/skipped/MB stats |
 | `notebooks/prepare_clips_drive.ipynb` | — | Colab notebook: Drive mount → repo → config ("City and people" queries, 500/query) → `getpass` API-key collector (Pixabay/Pexels) → verify cell (loads `FolderClipDataset`, prints stats, renders a filmstrip) → exact real-data `train_vae.py`/`train.py --data-dir` commands |
 | `scripts/harvest_urls.py` | Part 1 | No-API-key URL harvester (stdlib only): fetches stock search pages with a browser User-Agent and extracts direct `.mp4` file URLs from the embedded HTML (Pexels: `videos.pexels.com/video-files/<id>/<id>-<variant>.mp4`, pagination via `?page=N`, one sd variant per video; Pixabay: optional secondary source, `_tiny`→`_medium` suffix swap kept only when HEAD returns 200). Pure-function parsing (`extract_pexels_urls`, `choose_variant`) unit-tested without network. Writes `urls.txt` for `prepare_clips.py --source urls` |
-| `scripts/caption_clips.py` | Part 1/5 | 100% Free Tier Gemini vision captioner for prepared clips: replaces weak file/tag captions with dense 15-30 word scene descriptions (subject, action, setting, camera move, lighting); 3 frames resized to ≤512px; paced at 6s with `--max-calls` cap (default 240); graceful HTTP 429 quota handling; resume-safe atomic updates |
+| `scripts/caption_clips.py` | Part 1/5 | Two-backend vision captioner (prep-only, $0 cost): replaces weak file/tag captions with dense 15-30 word scene descriptions (subject, action, camera move, lighting); Gemini 3.8-flash (fallback chain on 503, dual-key rotation on 429) + local BLIP fallback (`--backend local`/`auto`); quality gate, resume-safe atomic saves flushed every 5 clips |
 | `vidgen/data/dataset_tools.py` | Part 1 | Local dataset health + packing logic: memory-mapped clip/depth validation (missing, corrupt, dtype/shape, dark-sample, duplicate-reference, orphan checks) and verified multi-folder packing with collision-proof prefixed names and staged publish |
 | `scripts/vidgin_helper.py` | Part 1/5 | Helper bundle CLI with three commands: `captions` (delegates to the free-tier captioner), `check` (trainer-readiness report, optional JSON), and `pack` (merge prepared groups into one verified training dataset) |
 | `tests/test_helper_bundle.py` | Part 1/5 | Helper coverage: clean and damaged dataset reports, depth mismatch, orphans/duplicates, same-name chunk packing, bad-source/mixed-shape/non-empty-output refusal, CLI exit codes, and caption delegation |
@@ -588,52 +588,57 @@ measurement work, and the first depth-prepped dataset arrives with the
 256×256 re-prep. Depth here is relative and single-view (the visible
 surface only); it is a strong geometric hint, not a true 3D model.
 
-## Captioning: Free-tier Gemini Vision upgrade (`scripts/caption_clips.py`)
+## Captioning: Two-backend Vision System (`scripts/caption_clips.py`)
 
 Stock video captions from file names or tag search queries are weak labels
 that hinder prompt adherence. `scripts/caption_clips.py` replaces weak captions
-with rich, dense 15–30 word descriptions written by Gemini vision.
+with rich, dense 15–30 word descriptions written by Gemini vision or a local
+vision captioning model.
 
-### Key Rules & $0 Cost (100% Free Tier)
-- **Zero Budget ($0 Cost)**: The tool runs 100% free exclusively using the Gemini API free tier. No paid billing is required or assumed.
-- **Key Security**: The API key is read **ONLY** from the `GEMINI_API_KEY` environment variable, or via an interactive `getpass` prompt if unset. It is **never** hardcoded, never printed to console, and never saved to any file.
-- **Pacing & Limits**:
-  - The script waits at least 6 seconds between requests (`--pace 6.0`) to comfortably respect free-tier RPM limits.
-  - `--max-calls` (default `240`): After reaching the specified number of captions, it flushes progress and stops cleanly for the day.
-  - **Graceful Quota Handling**: If an HTTP 429 / resource exhausted quota error is returned, the script avoids looping or failing; it immediately saves all progress to `manifest.jsonl`, prints:
-    `Free quota reached — run again tomorrow; it will continue where it stopped`
-    and exits cleanly (exit code 0).
-- **Model Choice**:
-  - Default: `gemini-2.5-flash` (`--model gemini-2.5-flash`).
-  - Alternative: `gemini-2.5-flash-lite` (`--model gemini-2.5-flash-lite`). Its free tier allows more requests per day, allowing the dataset to complete in fewer days with slightly simpler caption phrasing.
-- **Frame Processing & Prompting**:
-  - Extracts 3 frames (first, middle, last) from each `.npy` clip (`uint8 (T,H,W,3)`).
-  - Resizes each frame so its widest side is at most 512 px (preserving aspect ratio) and encodes as JPEG.
-  - Sends all 3 frames with the prompt enforcing: ONE present-tense sentence of 15 to 30 words covering subject, action/motion, setting, camera movement, and lighting/time, omitting forbidden words ("video", "clip", "footage", "audio", "appears", "seems").
-- **Resume Safety & Data Preservation**:
-  - Moves the original weak caption to `"caption_weak"`, sets `"caption"` to the new caption, and tags `"caption_source": "gemini"`.
-  - Skips already-processed clips on subsequent runs unless `--overwrite` is specified.
-  - Preserves all other manifest keys (such as `"depth"`) completely untouched.
-  - Flushes to a temporary file and atomically replaces `manifest.jsonl` every 25 clips and on exit.
+### Prep-only Boundary & Contract Hard Rules
+- **Data-Prep Only**: This captioner is strictly a offline data-prep labeling tool (same status as MiDaS depth labels). It is **NOT** part of the Vidgin diffusion model and is **never** imported by `vidgen/` model code.
+- **Fixed Output Contract**: One caption per clip, written into the chunk's `manifest.jsonl`. Moves the previous caption to `"caption_weak"`, sets `"caption"`, preserves every other key untouched (crucially `"depth"` maps), and tags `"caption_source"` with the backend that produced it (`"gemini"` or `"local"`).
+- **Caption Spec**: ONE present-tense sentence of 15 to 30 words, describing the main subject and action, plus camera movement (static, pan, tilt, tracking) and lighting/time, generated from 3 frames sampled across the clip (first, middle, last).
+- **100% Free**: $0 budget, zero paid APIs or services.
+
+### Backends & Fallback Architecture
+1. **Gemini Vision Backend (`--backend gemini`)**:
+   - **Default Model**: `gemini-3.8-flash` (replaces retired `gemini-2.5-flash`).
+   - **Overload Fallback Chain**: On HTTP 503 or model overload, retries with backoff delays (10s, 25s, 50s), then sequentially tries fallback models in order: `gemini-3.5-flash` → `gemini-3.6-flash` → `gemini-3.7-flash` → `gemini-flash-latest`.
+   - **Two-Key Rotation**: Supports reading both `GEMINI_API_KEY` and `GEMINI_API_KEY_2` from the environment (or interactive `getpass` if unset). When key 1 hits HTTP 429 daily quota, it automatically rotates to key 2. Only stops cleanly after all keys are exhausted.
+   - **Pacing**: Paced at `>=6.0s` between requests (`--pace 6.0`) with `--max-calls` session limit (default `240`).
+2. **Local Vision Backend (`--backend local`)**:
+   - Uses `Salesforce/blip-image-captioning-base` via `transformers` running entirely locally on a Colab/Kaggle GPU if available, else CPU, with zero API calls and no quota limits.
+   - Guarded lazy import: `transformers` is only imported when the local backend runs; machines running Gemini only do not require `transformers`.
+   - Feeds the same 3 frames and post-processes raw model outputs into the required 15–30 word present-tense format with camera movement and lighting cues. Tags `"caption_source": "local"`.
+3. **Auto Mode (`--backend auto`)**:
+   - Tries Gemini first to leverage dense vision capabilities, rotates keys on 429, and upon exhausting all keys, seamlessly continues the **same run** on the local backend without interruption.
+
+### Robustness & Quality Gate
+- **Resume Safety**: Skips clips whose `"caption_source"` is already `"gemini"` or `"local"` unless `--overwrite` is specified.
+- **Atomic Manifest Saves**: Flushed atomically every 5 captions (`FLUSH_INTERVAL = 5`) and on exit.
+- **Quality Gate**: Rejects produced captions if empty, under 8 words, or containing file metadata (such as "fps", resolution dimensions, or bare filenames). Retries once on rejection; if retry also fails, logs the clip to `caption_failures.log` and continues.
+- **Reporting**: Logs failures per chunk dir and prints a final `SUMMARY:` line with processed, skipped, and failed counts per backend.
 
 ### How to Run
 
 ```bash
-# Set your free API key
-export GEMINI_API_KEY="your-gemini-api-key"
+# 1. Gemini with dual-key rotation (free tier)
+export GEMINI_API_KEY="your-primary-key"
+export GEMINI_API_KEY_2="your-backup-key"
+python scripts/caption_clips.py --data-dir /path/to/clips --backend gemini
 
-# Run with defaults (gemini-2.5-flash, max 240 calls/day, 6s pacing)
-python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/tiny-clips
+# 2. Local BLIP backend (offline, zero quota, GPU if available)
+python scripts/caption_clips.py --data-dir /path/to/clips --backend local
 
-# Or use gemini-2.5-flash-lite for higher daily free request allowance
-python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/tiny-clips \
-    --model gemini-2.5-flash-lite --max-calls 500
+# 3. Auto mode (Gemini first, auto-continue on local when quota hits)
+python scripts/caption_clips.py --data-dir /path/to/clips --backend auto
 
-# Re-run after quota reset: automatically resumes and skips already-captioned clips
-python scripts/caption_clips.py --data-dir /content/drive/MyDrive/vidgin-data/tiny-clips
+# 4. Via helper bundle
+python scripts/vidgin_helper.py captions --data-dir /path/to/clips --backend auto
 ```
 
-Tests: `tests/test_caption_clips.py` (12 tests) verifies frame extraction, resizing, manifest updates, depth key preservation, resume-skip, overwrite, pacing stop, 429 quota handling, and API key prompts using a mocked client.
+Tests: `tests/test_caption_clips.py` (18 tests) verifies frame extraction, resizing, manifest updates, depth key preservation, resume-skip for both backends, overwrite, two-key rotation on 429, 503 model fallback order, auto-backend quota switch, quality-gate rejections and retries, and local postprocessing.
 
 ## Helper bundle (`scripts/vidgin_helper.py`) — 2026-10-22
 

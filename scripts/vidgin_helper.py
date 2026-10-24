@@ -63,17 +63,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     captions = sub.add_parser(
-        "captions", help="write proper Gemini captions for a prepared clip folder"
+        "captions", help="write proper vision captions for a prepared clip folder"
     )
     captions.add_argument("--data-dir", required=True, help="prepared clips directory")
+    captions.add_argument(
+        "--backend",
+        choices=["gemini", "local", "auto"],
+        default="gemini",
+        help="captioning backend: 'gemini' (Free Tier API), 'local' (BLIP vision model), or 'auto'",
+    )
     captions.add_argument("--limit", type=int, default=None,
                           help="maximum clips to inspect in this run (default: all)")
     captions.add_argument("--max-calls", type=int, default=240,
                           help="free-tier API call cap for this run (default: 240)")
-    captions.add_argument("--model", default="gemini-2.5-flash",
-                          help="Gemini vision model (default: gemini-2.5-flash)")
+    captions.add_argument("--model", default="gemini-3.8-flash",
+                          help="Gemini vision model (default: gemini-3.8-flash)")
     captions.add_argument("--overwrite", action="store_true",
-                          help="re-caption clips already captioned by Gemini")
+                          help="re-caption clips already captioned by Gemini or local")
     captions.add_argument("--pace", type=float, default=6.0,
                           help="seconds between free-tier requests (default: 6.0)")
 
@@ -158,11 +164,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "captions":
         print(
-            f"Captioning clips in {args.data_dir} using {args.model} (free tier)...",
+            f"Captioning clips in {args.data_dir} using {args.backend} backend (model: {args.model})...",
             flush=True,
         )
         processed, skipped, failed = _caption_dataset(
             data_dir=args.data_dir,
+            backend=args.backend,
             limit=args.limit,
             max_calls=args.max_calls,
             model=args.model,
