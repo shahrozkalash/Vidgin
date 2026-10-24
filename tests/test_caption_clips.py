@@ -50,11 +50,15 @@ from caption_clips import (
     is_overload_error,
     is_quota_error,
     load_manifest,
+    normalize_frame,
     parse_args,
     postprocess_local_caption,
     resolve_api_key,
     resolve_api_keys,
+    resolve_local_model_source,
+    sample_frames,
     save_manifest_atomic,
+    validate_caption_detailed,
     validate_caption_quality,
 )
 
@@ -553,22 +557,31 @@ def test_local_backend_direct(tmp_path):
     _, entries = load_manifest(data_dir)
     assert entries[0]["caption_source"] == "local"
     assert entries[1]["caption_source"] == "local"
-    words0 = entries[0]["caption"].split()
-    assert 15 <= len(words0) <= 30
+    # Honest local captions: the model's own words, cleaned — never padded
+    # with invented camera/lighting phrases to reach a word count.
+    assert entries[0]["caption"] == "A surfer riding a tall ocean wave at sunrise."
     assert entries[0]["caption"].endswith(".")
+    assert "tracking" not in entries[0]["caption"].lower()
+    assert "camera" not in entries[0]["caption"].lower()
 
 
 # ------------------------------------------------------------- Quality Gate Rejections
 def test_quality_gate_rejections(tmp_path, monkeypatch):
-    """Quality gate: reject empty, <8 words, fps, resolution, or bare filenames.
+    """Quality gate: reject empty, near-empty, fps, resolution, or bare filenames.
     Retry once; if retry fails, mark clip failed and log to failures file.
+
+    Layered gate (upgraded): a short but real caption is VALID with a
+    warning — length alone is not a failure.
     """
     monkeypatch.setattr(caption_clips.time, "sleep", lambda s: None)
 
     # Unit validation checks
     assert not validate_caption_quality("")[0]
     assert not validate_caption_quality("   ")[0]
-    assert not validate_caption_quality("A car driving on road")[0]  # 5 words (< 8)
+    assert not validate_caption_quality("Too short")[0]  # 2 words: no information
+    ok_short, _r, warns_short = validate_caption_detailed("A car driving on road")
+    assert ok_short is True  # 5 real words: valid for a simple scene
+    assert any("short" in w for w in warns_short)
     assert not validate_caption_quality("A video shot at 60fps in the park under sun")[0]  # fps
     assert not validate_caption_quality("A footage rendered at 1920x1080 resolution in daylight")[0]  # resolution
     assert not validate_caption_quality("clip_000124.mp4")[0]  # bare filename
@@ -622,21 +635,29 @@ def test_quality_gate_rejections(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------- Postprocessing & Helpers
 def test_postprocess_local_caption():
+    """REGRESSION (fabrication): post-processing must never invent details.
+
+    The previous implementation appended camera-movement and lighting
+    clauses (e.g. ", with the camera tracking smoothly under bright
+    natural daylight") plus a setting phrase to pad captions to 15-30
+    words. BLIP observed none of that. The honest contract: clean the
+    model's own words only.
+    """
     raw_short = "a dog running on the grass"
     processed = postprocess_local_caption(raw_short)
-    words = processed.split()
-    assert 15 <= len(words) <= 30
-    assert processed[0].isupper()
-    assert processed.endswith(".")
-    assert "camera" in processed.lower()
-    assert any(w in processed.lower() for w in ["light", "daylight", "sun"])
+    assert processed == "A dog running on the grass."
+    assert "camera" not in processed.lower()
+    assert "daylight" not in processed.lower()
+    assert "tracking" not in processed.lower()
+    assert "open setting" not in processed.lower()
 
     raw_already_good = (
         "A red vintage sports car cruises down an empty desert highway, "
         "the camera tracking smoothly under bright midday sunlight."
     )
     processed_good = postprocess_local_caption(raw_already_good)
-    assert 15 <= len(processed_good.split()) <= 30
+    # The model's own words are preserved verbatim (cleaned only).
+    assert processed_good == raw_already_good
     assert processed_good.endswith(".")
 
 

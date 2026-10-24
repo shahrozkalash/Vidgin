@@ -78,6 +78,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="free-tier API call cap for this run (default: 240)")
     captions.add_argument("--model", default="gemini-3.8-flash",
                           help="Gemini vision model (default: gemini-3.8-flash)")
+    captions.add_argument("--dry-run", action="store_true",
+                          help="generate and validate captions but write nothing")
+    captions.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
+                          help="device for the local backend (default: auto)")
+    captions.add_argument("--max-frames", type=int, default=3,
+                          help="maximum frames sampled per clip (default: 3)")
+    captions.add_argument("--local-model-dir", default=None,
+                          help="local folder with BLIP weights (loaded offline)")
+    captions.add_argument("--report", default=None,
+                          help="write a JSON run report to this path")
+    captions.add_argument("--review-export", default=None,
+                          help="write a JSONL human-review export to this path")
+    captions.add_argument("--verbose", action="store_true",
+                          help="print every generated caption")
     captions.add_argument("--overwrite", action="store_true",
                           help="re-caption clips already captioned by Gemini or local")
     captions.add_argument("--pace", type=float, default=6.0,
@@ -175,6 +189,13 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             overwrite=args.overwrite,
             pace_seconds=args.pace,
+            dry_run=args.dry_run,
+            device=None if args.device == "auto" else args.device,
+            max_frames=args.max_frames,
+            local_model_dir=args.local_model_dir,
+            report_path=args.report,
+            review_export_path=args.review_export,
+            verbose=args.verbose,
         )
         print("=" * 50)
         print(f"Captioned: {processed}")

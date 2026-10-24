@@ -9,17 +9,28 @@ Upgraded two-backend captioning system (100% Free Tier):
   - Two API keys support (GEMINI_API_KEY and GEMINI_API_KEY_2) with automatic rotation on HTTP 429.
   - Paced at >=6s between calls with --max-calls cap.
 - Local backend (--backend local):
-  - Locally running vision captioner (Salesforce/blip-image-captioning-base via transformers).
+  - Locally running IMAGE captioner (Salesforce/blip-image-captioning-base via transformers).
+    BLIP captions single frames; it cannot judge motion, camera movement, or
+    lighting changes. Local captions are therefore honest frame-grounded
+    descriptions of the sampled middle frame — nothing is appended or
+    invented to make them sound richer.
   - Works on Colab/Kaggle GPU if available, else CPU, with $0 cost and zero API quota.
   - Lazy import guard so Gemini runs on machines without transformers.
+  - Weights come from --local-model-dir / VIDGIN_LOCAL_CAPTION_MODEL when set
+    (a local folder is loaded offline); otherwise the HuggingFace model id is
+    downloaded on first use.
 - Auto mode (--backend auto):
   - Tries Gemini first, rotates keys on 429, and on full quota exhaustion continues on local backend.
 - Robustness:
   - Resume-safe: skips entries whose caption_source is "gemini" or "local".
   - Atomic manifest saves flushed every 5 captions and on exit.
-  - Quality gate: rejects empty, <8 words, or file metadata captions, retries once, then logs failure.
+  - Layered quality validation: hard failures (empty, metadata, model error
+    text, wrappers) reject the caption; softer issues (very generic wording,
+    duplicate of another clip's caption) are warnings recorded in the run
+    report / review export, never silent edits.
   - Preserves all existing keys (especially "depth" and "caption_weak").
   - Final SUMMARY line printing per-backend counts.
+  - --dry-run reports what would change without writing anything.
 """
 
 from __future__ import annotations
@@ -58,12 +69,20 @@ OVERLOAD_BACKOFF_DELAYS = (10.0, 25.0, 50.0)
 LOCAL_MODEL_NAME = "Salesforce/blip-image-captioning-base"
 
 CAPTION_INSTRUCTION = (
-    "Describe this video clip in ONE sentence of 15 to 30 words, present tense. "
-    "Cover: the main subject, what it is doing and how it moves, the setting, "
-    "the camera movement (static, pan, tilt, zoom, or tracking), and the "
-    "lighting or time of day. Do not use the words video, clip, or footage. "
-    "Do not mention audio. Do not guess at text or signs you cannot read. "
-    "Do not hedge with words like appears or seems."
+    "You are given several frames from one short video clip, in chronological "
+    "order. Write a factual caption of one or two sentences, present tense, "
+    "normally 20 to 60 words when the content justifies it; shorter is fine "
+    "for a simple scene. Describe only what the frames actually show: the "
+    "main subject and its visible appearance, its action and how it changes "
+    "across the frames, the environment and background, and interactions "
+    "between subjects. Mention camera movement (static, pan, tilt, zoom, "
+    "tracking) ONLY when comparing the frames gives clear evidence of it; "
+    "do not confuse subject movement with camera movement. Mention lighting "
+    "or weather only when clearly visible. For a static scene, describe the "
+    "composition instead of inventing motion. Do not invent actions, "
+    "objects, locations, identities, emotions, or motives. Do not use the "
+    "words video, clip, or footage. Do not mention audio, subtitles, or "
+    "watermarks. Return ONLY the caption, with no introduction or quotes."
 )
 
 _FPS_PATTERN = re.compile(r"\b\d*\.?\d*\s*fps\b", re.IGNORECASE)
@@ -116,6 +135,40 @@ def is_overload_error(exc: Exception) -> bool:
 
 
 # ------------------------------------------------------------- Frame processing
+def normalize_frame(frame: np.ndarray) -> np.ndarray:
+    """Return one frame as uint8 (H, W, 3).
+
+    Handles grayscale (H, W) and (H, W, 1), RGBA (drops alpha), and float
+    arrays (assumed 0..1 or 0..255 range, clipped and scaled safely).
+    Raises ValueError for empty or unsupported shapes.
+    """
+    arr = np.asarray(frame)
+    if arr.size == 0:
+        raise ValueError("frame is empty")
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = np.concatenate([arr] * 3, axis=-1)
+    elif arr.ndim == 3 and arr.shape[-1] == 4:
+        arr = arr[..., :3]
+    elif not (arr.ndim == 3 and arr.shape[-1] == 3):
+        raise ValueError(f"unsupported frame shape {arr.shape}")
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.float64)
+        if arr.max(initial=0) <= 1.5:  # 0..1 float range
+            arr = arr * 255.0
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return arr
+
+
+def _frames_nearly_identical(a: np.ndarray, b: np.ndarray,
+                             threshold: float = 2.0) -> bool:
+    """Cheap duplicate check: mean absolute pixel difference below threshold."""
+    if a.shape != b.shape:
+        return False
+    return float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16)))) < threshold
+
+
 def extract_three_frames(clip: np.ndarray) -> list[np.ndarray]:
     """Sample first, middle, last frames from uint8 (T, H, W, 3) clip."""
     t = len(clip)
@@ -128,9 +181,44 @@ def extract_three_frames(clip: np.ndarray) -> list[np.ndarray]:
     return [clip[0], clip[t // 2], clip[t - 1]]
 
 
+def sample_frames(clip: np.ndarray, max_frames: int = 3) -> list[np.ndarray]:
+    """Deterministically sample up to ``max_frames`` frames across a clip.
+
+    Frames stay in chronological order and are spread evenly. Consecutive
+    picks that are (nearly) identical pixels are dropped when the clip has
+    other distinct frames to offer, so static duplicates do not waste the
+    model's context. Every frame is normalized to uint8 (H, W, 3).
+    With max_frames=3 this returns first/middle/last, matching
+    extract_three_frames on distinct frames.
+    """
+    arr = np.asarray(clip)
+    if arr.ndim < 3 or len(arr) == 0:
+        raise ValueError("clip has 0 frames")
+    if max_frames < 1:
+        raise ValueError("max_frames must be >= 1")
+    t = len(arr)
+    if max_frames == 3:
+        picked = extract_three_frames(arr)
+    elif t == 1:
+        picked = [arr[0]]
+    else:
+        idx = sorted({int(round(i * (t - 1) / (max_frames - 1)))
+                      for i in range(max_frames)} if max_frames > 1 else {t // 2})
+        picked = [arr[i] for i in idx]
+    frames = [normalize_frame(f) for f in picked]
+    if len(frames) > 1:
+        distinct = [frames[0]]
+        for f in frames[1:]:
+            if not _frames_nearly_identical(distinct[-1], f):
+                distinct.append(f)
+        # A fully static clip legitimately collapses to one frame.
+        frames = distinct
+    return frames
+
+
 def frame_to_jpeg_bytes(frame: np.ndarray, max_side: int = MAX_SIDE) -> bytes:
     """Resize frame so widest side <= max_side px; return encoded JPEG bytes."""
-    img = Image.fromarray(frame)
+    img = Image.fromarray(normalize_frame(frame))
     w, h = img.size
     if max(w, h) > max_side:
         if w >= h:
@@ -190,6 +278,45 @@ def save_manifest_atomic(manifest_path: str, entries: list[dict]) -> None:
         raise
 
 
+def _write_json_atomic(path: str, obj: any) -> None:
+    """Write JSON to path atomically (temp file + rename)."""
+    dirname = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(prefix="report_tmp_", dir=dirname, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _write_jsonl_atomic(path: str, rows: list[dict]) -> None:
+    """Write JSONL rows to path atomically (temp file + rename)."""
+    dirname = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(prefix="review_tmp_", dir=dirname, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def log_failure(data_dir: str, file_name: str) -> None:
     """Record a failed clip filename to caption_failures.log."""
     log_path = os.path.join(data_dir, FAILURES_LOG)
@@ -198,37 +325,82 @@ def log_failure(data_dir: str, file_name: str) -> None:
 
 
 # ------------------------------------------------------------- Quality Gate
-def validate_caption_quality(caption: str) -> tuple[bool, str]:
-    """Check if caption passes quality gate.
-    
-    Rejects:
-    - Empty or whitespace-only
-    - Under 8 words
-    - Contains file metadata ("fps", resolution patterns like 1920x1080 / 1080p, bare filenames)
-    
-    Returns (is_valid, rejection_reason).
+_MIN_WORDS_HARD = 4        # below this a caption carries almost no information
+_MAX_WORDS_WARN = 90       # above this it is probably rambling, not describing
+_GENERIC_PATTERNS = (
+    "a video of", "video of something", "something happening",
+    "some stuff", "a scene with", "an image of something",
+)
+_INTRO_PATTERNS = re.compile(
+    r"^(here is|here's|this is (a|the) caption|sure[,!.]|the caption is|"
+    r"in this (video|clip|image)|the (video|image) (shows|depicts|displays))\b",
+    re.IGNORECASE,
+)
+_ERROR_PATTERNS = re.compile(
+    r"(as an ai|i cannot|i can't|unable to (process|view|see)|"
+    r"error[:\s]|failed to|no image (was )?(provided|given)|api (key|error))",
+    re.IGNORECASE,
+)
+_MARKDOWN_PATTERN = re.compile(r"(^|\s)(#{1,6}\s|\*\*|```|^\s*[-*]\s)", re.MULTILINE)
+
+
+def validate_caption_detailed(caption: str) -> tuple[bool, str, list[str]]:
+    """Layered caption validation.
+
+    Returns (is_valid, hard_failure_reason, warnings).
+
+    Hard failures reject the caption outright: empty, extremely short,
+    file metadata (fps / resolution / bare filename), model error text,
+    markdown or JSON wrappers, introductory phrases, or a repeated
+    sentence. Warnings never reject: generic wording, unusual length, or
+    other soft issues a human may want to review. A valid short caption
+    for a simple scene passes — length alone is not a failure.
     """
+    warnings: list[str] = []
     if not caption or not caption.strip():
-        return False, "empty caption"
+        return False, "empty caption", warnings
 
     clean = " ".join(caption.strip().split())
     words = clean.split()
-    if len(words) < 8:
-        return False, f"under 8 words ({len(words)} words)"
 
+    if len(words) < _MIN_WORDS_HARD:
+        return False, f"too short ({len(words)} words)", warnings
     if _FPS_PATTERN.search(clean):
-        return False, "contains fps metadata"
-
+        return False, "contains fps metadata", warnings
     if _RES_PATTERN.search(clean):
-        return False, "contains resolution metadata"
-
+        return False, "contains resolution metadata", warnings
     if _EXT_PATTERN.search(clean) or _FILENAME_PREFIX_PATTERN.match(clean):
-        return False, "looks like file metadata or bare filename"
-
+        return False, "looks like file metadata or bare filename", warnings
     if len(words) == 1 and ("." in clean or "_" in clean or "-" in clean):
-        return False, "looks like a bare filename"
+        return False, "looks like a bare filename", warnings
+    if clean.startswith(("{", "[", "```")) or clean.endswith("```"):
+        return False, "wrapped in JSON or markdown", warnings
+    if _MARKDOWN_PATTERN.search(clean):
+        return False, "contains markdown formatting", warnings
+    if _INTRO_PATTERNS.search(clean):
+        return False, "starts with an introductory phrase", warnings
+    if _ERROR_PATTERNS.search(clean.lower()):
+        return False, "looks like a model error message", warnings
+    sentences = [s.strip().lower() for s in re.split(r"[.!?]+", clean) if s.strip()]
+    if len(sentences) != len(set(sentences)):
+        return False, "repeats a sentence", warnings
+    if "\n" in caption.strip():
+        return False, "multiple paragraphs", warnings
 
-    return True, ""
+    lower = clean.lower()
+    if any(p in lower for p in _GENERIC_PATTERNS):
+        warnings.append("generic wording")
+    if len(words) > _MAX_WORDS_WARN:
+        warnings.append(f"unusually long ({len(words)} words)")
+    if len(words) < 8:
+        warnings.append(f"short caption ({len(words)} words)")
+    return True, "", warnings
+
+
+def validate_caption_quality(caption: str) -> tuple[bool, str]:
+    """Backward-compatible hard gate: (is_valid, rejection_reason)."""
+    is_valid, reason, _warnings = validate_caption_detailed(caption)
+    return is_valid, reason
 
 
 # ------------------------------------------------------------------- Gemini API
@@ -349,8 +521,30 @@ def generate_clip_caption(
 _LOCAL_CAPTIONER = None
 
 
-def get_local_captioner(device: str | None = None):
-    """Lazily load Salesforce/blip-image-captioning-base model and processor."""
+LOCAL_MODEL_ENV = "VIDGIN_LOCAL_CAPTION_MODEL"
+
+
+def resolve_local_model_source(model_dir: str | None = None) -> str:
+    """Where local weights come from: explicit arg > env var > HF model id."""
+    if model_dir:
+        return model_dir
+    env = os.environ.get(LOCAL_MODEL_ENV, "").strip()
+    if env:
+        return env
+    return LOCAL_MODEL_NAME
+
+
+def get_local_captioner(device: str | None = None,
+                        model_dir: str | None = None):
+    """Lazily load the local BLIP captioner (processor + model + device).
+
+    ``model_dir`` (or the VIDGIN_LOCAL_CAPTION_MODEL env var) may point at a
+    local folder holding the weights; a folder is loaded with
+    local_files_only=True so no network access is attempted. Without one,
+    the HuggingFace model id is used and weights download on first use.
+    The additional dependencies for this backend are transformers + torch:
+    ``pip install transformers torch``.
+    """
     global _LOCAL_CAPTIONER
     if _LOCAL_CAPTIONER is not None:
         return _LOCAL_CAPTIONER
@@ -365,9 +559,24 @@ def get_local_captioner(device: str | None = None):
 
     import torch
 
-    target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    processor = BlipProcessor.from_pretrained(LOCAL_MODEL_NAME)
-    model = BlipForConditionalGeneration.from_pretrained(LOCAL_MODEL_NAME)
+    if device in (None, "auto"):
+        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "--device cuda requested but CUDA is not available in this "
+            "PyTorch build / machine; use --device cpu or auto."
+        )
+    else:
+        target_device = device
+
+    source = resolve_local_model_source(model_dir)
+    if os.path.isdir(source):
+        processor = BlipProcessor.from_pretrained(source, local_files_only=True)
+        model = BlipForConditionalGeneration.from_pretrained(
+            source, local_files_only=True)
+    else:
+        processor = BlipProcessor.from_pretrained(source)
+        model = BlipForConditionalGeneration.from_pretrained(source)
     model.to(target_device)
     model.eval()
 
@@ -376,8 +585,15 @@ def get_local_captioner(device: str | None = None):
 
 
 def postprocess_local_caption(raw: any, frames: list[np.ndarray] | None = None) -> str:
-    """Post-process raw caption output into ONE present-tense sentence of 15-30 words,
-    covering action, camera movement, and lighting.
+    """Clean a raw local-model caption WITHOUT adding information.
+
+    The local model is a single-frame image captioner: it cannot observe
+    camera movement, lighting changes, or motion. This function therefore
+    only normalizes the model's own words — strips boilerplate lead-ins,
+    collapses whitespace, capitalizes, and ends with one period. It must
+    NEVER append camera movement, lighting, weather, setting, or any other
+    detail the model did not produce (an earlier version did exactly that,
+    which fabricated training data; see the regression tests).
     """
     if raw is None:
         return ""
@@ -398,66 +614,9 @@ def postprocess_local_caption(raw: any, frames: list[np.ndarray] | None = None) 
     if not clean:
         return ""
 
-    # Strip existing trailing punctuation and standardize spaces
-    clean = " ".join(clean.rstrip(".!?,; ").split())
-    # Ensure capitalized start
+    # Standardize whitespace, capitalize, single trailing period.
+    clean = " ".join(clean.split())
     clean = clean[0].upper() + clean[1:]
-
-    lower = clean.lower()
-    has_camera = any(
-        w in lower
-        for w in [
-            "camera",
-            "pan",
-            "panning",
-            "tilt",
-            "tilting",
-            "tracking",
-            "zoom",
-            "zooming",
-            "static",
-            "view",
-        ]
-    )
-    has_lighting = any(
-        w in lower
-        for w in [
-            "light",
-            "lighting",
-            "sun",
-            "sunlight",
-            "daylight",
-            "morning",
-            "evening",
-            "afternoon",
-            "overcast",
-            "shadow",
-            "illuminat",
-            "golden",
-        ]
-    )
-
-    # Enrich if camera or lighting missing, or word count is low
-    words = clean.split()
-    if not has_camera and not has_lighting:
-        clean += ", with the camera tracking smoothly under bright natural daylight"
-    elif not has_camera:
-        clean += ", captured with the camera tracking smoothly beside the scene"
-    elif not has_lighting:
-        clean += ", illuminated under clear natural daylight"
-
-    words = clean.split()
-    # If still under 15 words, add subtle grounding phrase
-    if len(words) < 15:
-        clean += " in an open setting"
-        words = clean.split()
-
-    # If exceeding 30 words, trim cleanly
-    if len(words) > 30:
-        words = words[:29]
-        clean = " ".join(words).rstrip(",;")
-
-    # Ensure single period ending
     clean = clean.rstrip(".!?,; ") + "."
     return clean
 
@@ -469,7 +628,7 @@ def generate_clip_caption_local(
 ) -> str:
     """Generate caption using local vision model (BLIP) fed 3 frames across the clip."""
     if local_captioner is None:
-        processor, model, dev = get_local_captioner(device=device)
+        processor, model, dev = get_local_captioner(device=device, model_dir=local_model_dir)
     elif isinstance(local_captioner, tuple) and len(local_captioner) == 3:
         processor, model, dev = local_captioner
     elif callable(local_captioner):
@@ -527,6 +686,12 @@ def caption_dataset(
     backend: str = "gemini",
     local_captioner: any = None,
     device: str | None = None,
+    dry_run: bool = False,
+    max_frames: int = 3,
+    local_model_dir: str | None = None,
+    report_path: str | None = None,
+    review_export_path: str | None = None,
+    verbose: bool = False,
 ) -> tuple[int, int, int]:
     """Process clips in data_dir, updating captions with Gemini vision or local BLIP.
 
@@ -535,8 +700,11 @@ def caption_dataset(
     - --backend local: Local vision captioner (Salesforce/blip-image-captioning-base).
     - --backend auto: Gemini first, automatically continuing on local backend when all keys hit quota.
     - Resume safety: skips entries with caption_source in ("gemini", "local").
-    - Quality gate: rejects <8 words or metadata, retries once, logs failure if failed twice.
+    - Layered validation: hard failures reject (retry once, then log failure);
+      warnings are collected into the run report / review export.
     - Atomic manifest saves flushed every FLUSH_INTERVAL (5) captions.
+    - dry_run: generate and validate captions but write nothing (no manifest
+      saves, no failure log); counts describe what WOULD change.
     - Final SUMMARY line printing per-backend counts.
 
     Returns (processed_count, skipped_count, failed_count).
@@ -569,7 +737,7 @@ def caption_dataset(
     # Pre-load local captioner if local backend is selected
     if active_backend == "local" and local_captioner is None:
         try:
-            local_captioner = get_local_captioner(device=device)
+            local_captioner = get_local_captioner(device=device, model_dir=local_model_dir)
         except Exception as e:
             print(f"Failed to initialize local captioner: {e}", flush=True)
             raise
@@ -588,6 +756,48 @@ def caption_dataset(
     failed_local = 0
 
     gemini_calls_made = 0
+
+    # Run-report state: warnings, duplicates, review items, caption lengths.
+    report_warnings: list[dict] = []
+    review_items: list[dict] = []
+    seen_captions: dict[str, str] = {}
+    caption_lengths: list[int] = []
+
+    def finish() -> tuple[int, int, int]:
+        """Shared exit path: summary print + optional report/review files."""
+        _print_summary(
+            processed_count, skipped_count, failed_count,
+            processed_gemini, skipped_gemini, failed_gemini,
+            processed_local, skipped_local, failed_local,
+        )
+        if dry_run:
+            print("DRY RUN: no files were written.", flush=True)
+        if report_path:
+            report = {
+                "data_dir": data_dir,
+                "backend_requested": backend,
+                "backend_final": active_backend,
+                "dry_run": dry_run,
+                "processed": processed_count,
+                "skipped": skipped_count,
+                "failed": failed_count,
+                "by_backend": {
+                    "gemini": {"processed": processed_gemini,
+                               "skipped": skipped_gemini,
+                               "failed": failed_gemini},
+                    "local": {"processed": processed_local,
+                              "skipped": skipped_local,
+                              "failed": failed_local},
+                },
+                "gemini_calls_made": gemini_calls_made,
+                "warnings": report_warnings,
+                "review_count": len(review_items),
+                "caption_word_lengths": caption_lengths,
+            }
+            _write_json_atomic(report_path, report)
+        if review_export_path:
+            _write_jsonl_atomic(review_export_path, review_items)
+        return processed_count, skipped_count, failed_count
 
     target_limit = (
         min(total_entries, int(limit)) if limit is not None else total_entries
@@ -616,26 +826,31 @@ def caption_dataset(
                 failed_gemini += 1
             else:
                 failed_local += 1
-            log_failure(data_dir, clip_file)
+            if not dry_run:
+                log_failure(data_dir, clip_file)
+            review_items.append({'file': clip_file, 'caption': entry.get('caption', ''), 'source': 'failed', 'issues': ['captioning failed']})
             continue
 
         # Load clip frames
         try:
             clip = np.load(clip_path)
-            three_frames = extract_three_frames(clip)
+            three_frames = sample_frames(clip, max_frames)
         except Exception as e:
             failed_count += 1
             if active_backend in ("gemini", "auto"):
                 failed_gemini += 1
             else:
                 failed_local += 1
-            log_failure(data_dir, clip_file)
+            if not dry_run:
+                log_failure(data_dir, clip_file)
+            review_items.append({'file': clip_file, 'caption': entry.get('caption', ''), 'source': 'failed', 'issues': ['captioning failed']})
             print(f"[{i}/{total_entries}] error reading {clip_file}: {e}", flush=True)
             continue
 
         # Generate caption with quality gate (retry once)
         new_caption: str | None = None
         current_source: str = ""
+        pending_warnings: list[str] = []
 
         quality_attempts = 2
         clip_failed = False
@@ -652,33 +867,24 @@ def caption_dataset(
                     active_backend = "local"
                     if local_captioner is None:
                         try:
-                            local_captioner = get_local_captioner(device=device)
+                            local_captioner = get_local_captioner(device=device, model_dir=local_model_dir)
                         except Exception as err:
                             print(
                                 f"Local backend unavailable ({err}). Saving progress and stopping.",
                                 flush=True,
                             )
-                            save_manifest_atomic(manifest_path, entries)
-                            return processed_count, skipped_count, failed_count
+                            if not dry_run:
+                                save_manifest_atomic(manifest_path, entries)
+                            return finish()
                 else:
                     print(
                         f"Reached --max-calls limit ({max_calls}) for this session. "
                         "Saving progress and stopping cleanly.",
                         flush=True,
                     )
-                    save_manifest_atomic(manifest_path, entries)
-                    _print_summary(
-                        processed_count,
-                        skipped_count,
-                        failed_count,
-                        processed_gemini,
-                        skipped_gemini,
-                        failed_gemini,
-                        processed_local,
-                        skipped_local,
-                        failed_local,
-                    )
-                    return processed_count, skipped_count, failed_count
+                    if not dry_run:
+                        save_manifest_atomic(manifest_path, entries)
+                    return finish()
 
             try:
                 if active_backend in ("gemini", "auto"):
@@ -722,46 +928,26 @@ def caption_dataset(
                         active_backend = "local"
                         if local_captioner is None:
                             try:
-                                local_captioner = get_local_captioner(device=device)
+                                local_captioner = get_local_captioner(device=device, model_dir=local_model_dir)
                             except Exception as err:
                                 print(
                                     f"Local backend unavailable ({err}). Saving progress and stopping cleanly.",
                                     flush=True,
                                 )
-                                save_manifest_atomic(manifest_path, entries)
-                                _print_summary(
-                                    processed_count,
-                                    skipped_count,
-                                    failed_count,
-                                    processed_gemini,
-                                    skipped_gemini,
-                                    failed_gemini,
-                                    processed_local,
-                                    skipped_local,
-                                    failed_local,
-                                )
-                                return processed_count, skipped_count, failed_count
+                                if not dry_run:
+                                    save_manifest_atomic(manifest_path, entries)
+                                return finish()
                         # Retry current clip on local backend
                         continue
                     else:
                         # gemini backend only: save progress and exit cleanly
-                        save_manifest_atomic(manifest_path, entries)
+                        if not dry_run:
+                            save_manifest_atomic(manifest_path, entries)
                         print(
                             "Free quota reached — run again tomorrow; it will continue where it stopped",
                             flush=True,
                         )
-                        _print_summary(
-                            processed_count,
-                            skipped_count,
-                            failed_count,
-                            processed_gemini,
-                            skipped_gemini,
-                            failed_gemini,
-                            processed_local,
-                            skipped_local,
-                            failed_local,
-                        )
-                        return processed_count, skipped_count, failed_count
+                        return finish()
 
             except Exception as e:
                 failed_count += 1
@@ -769,15 +955,18 @@ def caption_dataset(
                     failed_gemini += 1
                 else:
                     failed_local += 1
-                log_failure(data_dir, clip_file)
+                if not dry_run:
+                    log_failure(data_dir, clip_file)
+                review_items.append({'file': clip_file, 'caption': entry.get('caption', ''), 'source': 'failed', 'issues': ['captioning failed']})
                 print(f"[{i}/{total_entries}] error on {clip_file}: {e}", flush=True)
                 clip_failed = True
                 break
 
-            # Validate against quality gate
-            is_valid, reason = validate_caption_quality(candidate)
+            # Validate against the layered quality gate
+            is_valid, reason, cand_warnings = validate_caption_detailed(candidate)
             if is_valid:
                 new_caption = candidate
+                pending_warnings = cand_warnings
                 break
             else:
                 print(
@@ -797,18 +986,41 @@ def caption_dataset(
                         failed_gemini += 1
                     else:
                         failed_local += 1
-                    log_failure(data_dir, clip_file)
+                    if not dry_run:
+                        log_failure(data_dir, clip_file)
+                    review_items.append({'file': clip_file, 'caption': entry.get('caption', ''), 'source': 'failed', 'issues': ['captioning failed']})
                     clip_failed = True
                     break
 
         if clip_failed or new_caption is None:
             continue
 
-        # Preserve previous caption into caption_weak
-        if "caption_weak" not in entry:
-            entry["caption_weak"] = entry.get("caption", "")
-        entry["caption"] = new_caption
-        entry["caption_source"] = current_source
+        # Dataset-level checks: duplicate captions across clips are a
+        # warning for human review, never a silent rejection or edit.
+        clip_warnings = list(pending_warnings)
+        normalized = " ".join(new_caption.lower().split())
+        first_seen = seen_captions.get(normalized)
+        if first_seen is not None and first_seen != clip_file:
+            clip_warnings.append(f"duplicate caption of {first_seen}")
+        else:
+            seen_captions[normalized] = clip_file
+        caption_lengths.append(len(new_caption.split()))
+        if clip_warnings:
+            review_items.append({
+                "file": clip_file,
+                "caption": new_caption,
+                "source": current_source,
+                "issues": clip_warnings,
+            })
+            for w in clip_warnings:
+                report_warnings.append({"file": clip_file, "warning": w})
+
+        if not dry_run:
+            # Preserve previous caption into caption_weak
+            if "caption_weak" not in entry:
+                entry["caption_weak"] = entry.get("caption", "")
+            entry["caption"] = new_caption
+            entry["caption_source"] = current_source
 
         processed_count += 1
         dirty_since_flush += 1
@@ -819,14 +1031,15 @@ def caption_dataset(
             processed_local += 1
 
         # Print progress and captions for first 10 newly captioned clips
-        if processed_count <= 10:
+        if verbose or processed_count <= 10:
             print(f"[{i}/{total_entries}] [{current_source}] {new_caption}", flush=True)
         else:
             print(f"[{i}/{total_entries}] [{current_source}]", flush=True)
 
         # Flush manifest atomically every FLUSH_INTERVAL processed clips
         if dirty_since_flush >= FLUSH_INTERVAL:
-            save_manifest_atomic(manifest_path, entries)
+            if not dry_run:
+                save_manifest_atomic(manifest_path, entries)
             dirty_since_flush = 0
 
         # Check if max-calls was reached
@@ -840,7 +1053,7 @@ def caption_dataset(
                 active_backend = "local"
                 if local_captioner is None:
                     try:
-                        local_captioner = get_local_captioner(device=device)
+                        local_captioner = get_local_captioner(device=device, model_dir=local_model_dir)
                     except Exception as err:
                         print(
                             f"Local backend unavailable ({err}). Saving progress and stopping.",
@@ -861,21 +1074,10 @@ def caption_dataset(
 
     # Final atomic flush if any changes were made
     if dirty_since_flush > 0:
-        save_manifest_atomic(manifest_path, entries)
+        if not dry_run:
+            save_manifest_atomic(manifest_path, entries)
 
-    _print_summary(
-        processed_count,
-        skipped_count,
-        failed_count,
-        processed_gemini,
-        skipped_gemini,
-        failed_gemini,
-        processed_local,
-        skipped_local,
-        failed_local,
-    )
-
-    return processed_count, skipped_count, failed_count
+    return finish()
 
 
 def _print_summary(
@@ -948,6 +1150,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_PACE_SECONDS,
         help=f"Minimum seconds between Gemini API requests (default: {DEFAULT_PACE_SECONDS}s for free tier)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Generate and validate captions but write nothing (no manifest or log changes)",
+    )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="Device for the local backend (default: auto)",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=3,
+        help="Maximum frames sampled per clip (default: 3 = first/middle/last)",
+    )
+    parser.add_argument(
+        "--local-model-dir",
+        default=None,
+        help="Local folder with BLIP weights (loaded offline); "
+             f"overrides the {LOCAL_MODEL_ENV} env var and the HuggingFace download",
+    )
+    parser.add_argument(
+        "--report",
+        default=None,
+        help="Write a JSON run report (counts, warnings, duplicates) to this path",
+    )
+    parser.add_argument(
+        "--review-export",
+        default=None,
+        help="Write a JSONL export of clips needing human review to this path",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Print every generated caption, not just the first 10",
+    )
     return parser.parse_args(argv)
 
 
@@ -966,6 +1208,13 @@ def main() -> None:
         model=args.model,
         overwrite=args.overwrite,
         pace_seconds=args.pace,
+        dry_run=args.dry_run,
+        device=None if args.device == "auto" else args.device,
+        max_frames=args.max_frames,
+        local_model_dir=args.local_model_dir,
+        report_path=args.report,
+        review_export_path=args.review_export,
+        verbose=args.verbose,
     )
 
 
