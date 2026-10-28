@@ -66,3 +66,11 @@
 - Added `httprecovery` test: both real HTTP backend classes against a request-aware local fake server for malformed JSON repair, alternate-candidate selection, and skeptic rewrite with persistent flags.
 - Preserved PNG/JPEG data-URI MIME labeling in the compatible backend (the available prior file lacked this fix, so it is carried forward explicitly).
 - No new caption-generation features, backends, or readiness thresholds.
+
+## Round 7 — observation-woven caption length
+
+- Added an under-40-word-only composition step that weaves already-returned frame-positioned observations into the final caption, after stripping frame prefixes and applying existing normalization.
+- Added content-token overlap deduplication, complete-sentence 70-word cap, and no-padding behavior when observations run out.
+- Kept 40–70-word captions, `caption_short`, existing expansion requests, and over-length trimming unchanged.
+- Added named `weaving` regression test covering observed detail traceability, in-range byte identity, and short/review-flagged exhausted captions.
+- No changes to model backends, manifest safety, readiness thresholds, or performance claims.

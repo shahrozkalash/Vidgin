@@ -430,6 +430,33 @@ def caption_from_observation(obs,facts):
     if facts['scene_cut']:sentences.append('A large abrupt frame difference suggests a possible scene cut.')
     if facts['near_black']:sentences.append('Most sampled pixels are very dark.')
     caption=' '.join(sentences)
+    # Round 7: reuse only existing, distinct, model-asserted observations.
+    # Preserve in-range drafts byte-for-byte; never truncate or fabricate details.
+    if len(words(caption)) < 40:
+        for observation in obs.get('observations', []):
+            if not isinstance(observation, str):
+                continue
+            detail = re.sub(r'^\s*frames?\s+\d+(?:\s*[-–,]\s*\d+)*\s*:\s*', '', observation, flags=re.I)
+            detail = normalize(clean(detail))
+            if not detail or detail.lower() == 'unknown':
+                continue
+            detail_tokens = content_tokens(detail)
+            existing_tokens = content_tokens(caption)
+            if not detail_tokens or len(detail_tokens & existing_tokens) / len(detail_tokens) >= 0.8:
+                continue
+            detail_sentence = detail[0].upper() + detail[1:] + '.'
+            # Reject duplicate details, including paraphrases with substantial overlap.
+            prior_details = [x for x in sentences[3:] if x]
+            if any(detail_tokens == content_tokens(x) or
+                   (content_tokens(x) and len(detail_tokens & content_tokens(x)) / len(detail_tokens) >= 0.8)
+                   for x in prior_details):
+                continue
+            if len(words(caption)) + len(words(detail_sentence)) > 70:
+                continue
+            sentences.append(detail_sentence)
+            caption = ' '.join(sentences)
+            if len(words(caption)) >= 40:
+                break
     if len(words(caption))>90:
         # Trim only the scene-change verbosity; never invent filler.
         keep=90-len(words(' '.join(sentences[:2]+sentences[3:])))
@@ -970,6 +997,36 @@ def self_test():
         assert (p/'vidgin_review_pack.md').exists()
         print('EXTENDED PASS: pan_left, static, inverse-depth foreground, low_light, bright, expansion, self-check, separate-manifest benchmark join')
         print('STUB TIMING seconds/clip:',json.loads(m2.read_text())['vidgin_seconds'])
+        # Round 7: observation weaving, unchanged in-range drafts, no padding.
+        terse={'observations':[
+            'frames 1-2: a red bus travels along a broad city street beside several parked cars',
+            'frames 2-3: pedestrians wait beside a marked crossing near a row of brick buildings',
+            'frames 3-4: the red bus approaches an intersection where a traffic signal hangs overhead',
+            'frames 4-5: storefront windows and a narrow sidewalk remain visible behind the moving bus'],
+            'subject':'a bus','action':'drives','setting':'a street',
+            'start_state':'the bus enters the view','end_state':'the bus moves ahead'}
+        wf=dict(sf,near_static=False,scene_cut=False,near_black=False)
+        woven=caption_from_observation(terse,wf)
+        assert 40<=len(words(woven['caption']))<=70, woven['caption']
+        assert any('red bus travels along' in sentence.lower() for sentence in woven['caption'].split('. '))
+        woven_details=[woven['caption'].split('A red bus travels along',1)[1]] if 'A red bus travels along' in woven['caption'] else []
+        woven_details=['A red bus travels along'+x for x in woven_details]
+        source_tokens=[content_tokens(re.sub(r'^frames?\s+\d+(?:\s*[-–,]\s*\d+)*\s*:\s*','',o,flags=re.I)) for o in terse['observations']]
+        assert all(any(content_tokens(sentence) <= tokens for tokens in source_tokens) for sentence in woven_details if sentence.strip())
+        rich=dict(terse,action='travels slowly past a row of parked vehicles while the road remains visible',
+                  setting='a broad city street beside a pedestrian crossing and several brick buildings',
+                  start_state='the red bus is approaching the intersection and pedestrians stand beside the crossing',
+                  end_state='the red bus continues toward the signal and parked vehicles remain along the road')
+        # In-range comparison uses the exact pre-Round-7 composition formula.
+        subj,act,setting,start,end=(normalize(clean(rich[k]),count=k in ('subject','action','setting')) for k in ('subject','action','setting','start_state','end_state'))
+        old=f'{subj[0].upper()+subj[1:]} {act}. The scene is set against {setting}. Across the sampled frames, {start}; by the final sampled frame, {end}.'
+        assert 40<=len(words(old))<=70,(len(words(old)),old)
+        assert caption_from_observation(rich,wf)['caption']==old
+        exhausted=dict(terse,observations=['frames 1-2: a bus on a street'])
+        short=caption_from_observation(exhausted,wf)
+        assert len(words(short['caption']))<40 and short['caption_needs_review']
+        print('weaving PASS: 40-70 observed words, traceable details, in-range unchanged, exhausted stays short')
+        print('ROUND7 STUB median_words=',statistics.median([len(words(woven['caption'])),len(words(caption_from_observation(rich,wf)['caption']))]))
         # Round 3 named tests.
         grounded=StubBackend().describe([],{});bad=dict(grounded,subject='a giraffe')
         assert not grounding_flags(grounded,sf) and 'giraffe' in grounding_flags(bad,sf)

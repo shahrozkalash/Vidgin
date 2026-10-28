@@ -71,3 +71,13 @@ The append-only registry is flushed at checkpoints; it still requires `--jobs 1`
 ### Updated limitations
 
 A power failure can still lose up to the current checkpoint interval of work, and atomic rename does not guarantee directory-entry durability without a directory fsync. Progress counters describe work in the current invocation, not lifetime corpus totals. SIGKILL recovery is tested with a synthetic stub and local filesystem, not a real T4 session. No real model, human A/B, or production throughput quality claim follows from these tests. `--image-format jpeg` still requires optional OpenCV, and the compatible backend now labels encoded JPEG frames `image/jpeg` and PNG frames `image/png`. The baseline and per-manifest backup serve different purposes and must not be conflated.
+
+## Round 7 — observation-woven under-length composition
+
+Only drafts shorter than 40 words are eligible for weaving. The composer iterates over the model's existing `observations` in original order, removes the `frames i-j:` prefix, applies the same `clean` and `normalize` processing as structured fields, and appends a complete observation sentence when its content-token overlap with the existing caption is below 0.80. It also rejects repeated detail sentences at that threshold. A sentence that would put the caption over 70 words is skipped without truncation; weaving stops once 40 words are reached or observations are exhausted. Existing 40–70-word captions remain byte-identical to the prior composer, and drafts above the range retain the existing trimming behavior. `caption_short` and the existing grounding validator are unchanged. The composer does not generate new observations, and the expansion model call is unchanged.
+
+The `weaving` synthetic test checks observation traceability, compliant-length output from terse fields, unchanged in-range output, and short/review-flagged output when observations are exhausted. The synthetic benchmark prints median words, but this is not a measurement of real-model improvement. Length compliance is only a format gate, **not** proof of correctness or superiority to Gemini.
+
+### Updated limitations
+
+Woven observations are model assertions, not independent visual truth. The existing lexical grounding check cannot detect a fabricated observation repeated consistently by the model; optional skeptic checking can also share the model's blind spots. Strict overlap rejection may omit useful details, and sparse observation lists may still yield captions below 40 words. The unchanged readiness thresholds, real-model A/B evaluation requirement, and unmeasured T4 throughput remain in force. Earlier Round 6 limitations on checkpoint durability, MIME handling, and synthetic HTTP testing remain applicable.
