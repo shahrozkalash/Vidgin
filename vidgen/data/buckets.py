@@ -120,3 +120,42 @@ class BucketSampler:
         self.epoch = state["epoch"]
         self.cursor = state["cursor"]
         self.perm = state["perm"]
+
+    def reconcile(self, num_items: int, batch_size: int) -> bool:
+        """Adopt the CURRENT dataset size / batch size after a resume.
+
+        A checkpoint's saved sampler describes the dataset it was saved
+        on. Restoring it wholesale onto a different dataset silently
+        truncates coverage: the saved permutation only ever visits the
+        old item range (the Stage 2 VAE incident — sampler num_items
+        stayed 4203 across resumes onto a 6,339-clip dataset, so 10,000
+        steps sampled only the first 4,203 manifest entries).
+
+        When the current run's values differ, adopt them, regenerate the
+        permutation for the new size (same seed discipline: seed +
+        epoch * 7919, epoch preserved), restart the epoch (cursor = 0),
+        and print one loud line. When they match, do nothing at all —
+        resume stays bit-for-bit reproducible. Returns True when a
+        reconciliation happened.
+        """
+        if num_items <= 0:
+            raise ValueError("num_items must be positive")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if num_items == self.num_items and batch_size == self.batch_size:
+            return False
+        old_items, old_batch = self.num_items, self.batch_size
+        self.num_items = num_items
+        self.batch_size = batch_size
+        self.perm = self._make_perm()
+        self.cursor = 0
+        print(
+            f"SAMPLER RECONCILED: checkpoint num_items={old_items} "
+            f"batch_size={old_batch} -> current num_items={num_items} "
+            f"batch_size={batch_size}; permutation regenerated for the "
+            f"current dataset (seed={self.seed}, epoch={self.epoch}), "
+            f"cursor reset to 0; reason: current dataset and "
+            f"--batch-size take precedence on resume",
+            flush=True,
+        )
+        return True

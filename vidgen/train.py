@@ -396,7 +396,16 @@ class DiTTrainer:
             self.sched.load_state_dict(payload["sched"])
         if "scaler" in payload and self.scaler is not None:
             self.scaler.load_state_dict(payload["scaler"])
+        # Sampler reconciliation: the checkpoint's sampler describes the
+        # dataset IT was saved on; this trainer's fresh sampler carries
+        # the CURRENT dataset size and batch size. Capture them before
+        # the load overwrites them, then reconcile — a stale sampler
+        # silently truncates training coverage (Stage 2 VAE incident:
+        # num_items stayed 4203 onto a 6,339-clip dataset).
+        want_items = self.sampler.num_items
+        want_batch = self.sampler.batch_size
         self.sampler.load_state_dict(payload["sampler"])
+        self.sampler.reconcile(want_items, want_batch)
         self.step = payload["step"]
         self.loss_history = payload["loss_history"]
 
