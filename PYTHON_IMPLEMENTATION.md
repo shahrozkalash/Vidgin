@@ -798,6 +798,87 @@ reproduce the historical behaviour exactly — old checkpoints carry no
 `sched`/`scaler` keys and load as before. Tests:
 `tests/test_train_utils.py` (5 tests).
 
+### Hardening + EMA / latent cache / safe loading — 2026-10-28
+
+Bugs fixed:
+
+- **fp16 crash** — the non-finite guard skipped GradScaler overflow
+  steps without `scaler.update()`, so the next `unscale_()` raised and
+  every `--amp fp16` CUDA run died at its first overflow. Both trainers
+  now step through `train_utils.guarded_optimizer_step`; overflow steps
+  are logged as `skipped_overflow` and do not advance the LR schedule.
+- **VAE provenance** — DiT checkpoints now record `vae_ckpt`. Resume
+  reuses it (a forgotten `--vae-ckpt` used to continue on a random
+  VAE's latents), and `sample.py` warns when it has no VAE at all.
+- **`--seed` ignored with `--vae-ckpt`** — loading the VAE restored its
+  checkpoint's RNG over the freshly seeded streams before the DiT was
+  built. `load_checkpoint` no longer touches RNG unless
+  `restore_rng=True` (only resume paths ask for it).
+- **Pooling dropped the tokenizer** — pooled caption-tokenizer
+  checkpoints could not start the next round; pooling now keeps
+  `tokenizer`/`vae_ckpt` and refuses mismatched tokenizers.
+- **Fully-masked text rows** (CFG null embedding) gave NaN on
+  torch < 2.5; the DiT now returns the same zeros on every torch.
+- Checkpoint saves fsync before the atomic rename.
+
+New options (all off by default; old checkpoints load unchanged):
+
+- **EMA** — `--ema-decay 0.999` keeps an fp32 moving average of the
+  DiT + text encoder (decay ramps in as `(1+n)/(10+n)`); stored as
+  `ema` in each checkpoint and restored on resume. `sample.py` and
+  `scripts/evaluate_checkpoint.py` use it automatically (`--no-ema` for
+  the raw weights). It never feeds back into training. Pooled
+  checkpoints are weights-only, so a pool round restarts its EMA.
+- **Latent cache** — `--cache-latents` encodes each clip once (one clip
+  at a time, so values do not depend on batch composition) and keeps
+  the latent in CPU RAM; later epochs skip clip loading and the VAE
+  encoder entirely. RAM cost ≈ latent size × clips (tiny: ~20 KB/clip).
+- **Per-block modulation** — `--per-block-mod` (config
+  `per_block_mod`) adds a zero-init learned 9×D offset per block to the
+  shared AdaLN modulation (PixArt-α adaLN-single), so blocks are no
+  longer forced to identical scale/shift/gates. Fresh runs only;
+  `grow` refuses such checkpoints for now.
+
+Safe loading: `load_checkpoint` unpickles with `weights_only=True` and
+an allowlist (numpy RNG types; audio config dataclasses via
+`vidgen.audio.CHECKPOINT_CLASSES`). Anything else is refused unless
+`VIDGIN_TRUST_CHECKPOINTS=1`. Requires torch ≥ 2.6. CI runs the full
+suite on CPU (`.github/workflows/tests.yml`). Tests:
+`tests/test_training_hardening.py`, `tests/test_ema_cache_safety.py`.
+
+### Image-to-video and voiced videos — 2026-10-28
+
+**Image-to-video** (`vidgen/i2v.py`, `sample.py --image`). The causal
+VAE encodes frame 0 alone, so a still image encodes to latent frame 0
+of any video that starts with it (identical up to ~1e-7 float rounding,
+tested). Sampling
+clamps that frame to the rectified-flow path `(1-t)·noise + t·image`,
+the same `x_t` the DiT sees in training, and generates the rest of the
+window to continue from it, steered by the prompt. No retraining needed;
+works with `--seconds/--segments` (segment 1 starts from the image).
+The image is center-cropped to the model's aspect ratio, never stretched.
+
+    python -m vidgen.sample --ckpt run/latest.pt --image photo.jpg \
+        --prompt "the waves roll onto the beach" --seconds 10
+
+**Voice for videos** (`vidgen/audio/dialogue.py`, `scripts/add_audio.py`,
+`sample.py`). Timed lines `"START: TEXT"` via repeatable `--line` or a
+`--dialogue-file` (one per row, `#` comments); `--dialogue` still adds
+one line at 0.5 s. Placement: lines never overlap; a line too long for
+its slot is spoken faster through the voice model's duration scale (not
+below `--min-speech-speed`, default 0.6); if it still overruns, the next
+line is pushed back rather than cutting speech mid-sentence; only the
+video's end cuts, with a fade. Every shift/speed-up/cut is printed. The
+voice and vocoder load once for all lines. `--no-ambience` (add_audio)
+makes a voice-only track without the sound model; `sample.py` writes
+`clip_voiced.mp4` in the same command (voice only unless `--ambience`).
+
+    python -m vidgen.sample --ckpt run/latest.pt --prompt "two friends talk" \
+        --seconds 8 --line "0.5: Where are we going?" --line "2.5: You'll see."
+
+Needs trained voice + vocoder checkpoints (`scripts/train_audio.py`) and
+ffmpeg. Tests: `tests/test_i2v_voice.py`.
+
 ### Evaluation suite + MP4 export (Phases 6/7) — 2026-10-22
 
 Falling loss alone never proved quality. `vidgen/evaluate.py` adds

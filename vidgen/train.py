@@ -55,8 +55,9 @@ from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.text.tokenizer import CaptionTokenizer, load_tokenizer, tokenizer_from_dict
 from vidgen.train_utils import (
-    NonFiniteGuard, amp_context, build_lr_scheduler, make_grad_scaler,
-    oom_guidance, validate_train_options,
+    ModelEMA, NonFiniteGuard, amp_context, build_lr_scheduler,
+    guarded_optimizer_step, make_grad_scaler, oom_guidance,
+    validate_train_options,
 )
 from vidgen.dit.model import DiT
 from vidgen.vae.model import CausalVAE
@@ -79,6 +80,9 @@ class DiTTrainer:
                  total_steps: int | None = None,
                  grad_accum: int | None = None,
                  amp: str | None = None,
+                 ema_decay: float | None = None,
+                 cache_latents: bool = False,
+                 per_block_mod: bool = False,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -97,6 +101,10 @@ class DiTTrainer:
             # stem and learns from each clip's 3D map. Recorded in every
             # checkpoint's config; resume re-derives it from there.
             self.cfg.use_depth = True
+        if per_block_mod:
+            # Per-block AdaLN offsets (config.per_block_mod); like depth,
+            # recorded in the checkpoint config and re-derived on resume.
+            self.cfg.per_block_mod = True
         self.depth_dropout = depth_dropout
         self.device = resolve_rank_device(resolve_device(device), dist_info)
         self.batch_size = batch_size
@@ -105,6 +113,11 @@ class DiTTrainer:
         if ckpt_dir:
             os.makedirs(ckpt_dir, exist_ok=True)
 
+        # Recorded in every checkpoint: sampling, evaluation and resume
+        # must decode/encode with the SAME VAE, and before this was
+        # stored a forgotten --vae-ckpt silently fell back to a random
+        # VAE (the payload.get("vae_ckpt") readers never found a value).
+        self.vae_ckpt = vae_ckpt
         self.vae = CausalVAE().to(self.device)
         if vae_ckpt:
             payload = load_checkpoint(vae_ckpt, map_location=str(self.device))
@@ -155,6 +168,22 @@ class DiTTrainer:
             "grad_accum": self.grad_accum,
             "amp": self.amp,
         }
+        if ema_decay is not None:
+            # Only when enabled: a default run's train_config stays
+            # exactly the historical one.
+            self.train_config["ema_decay"] = float(ema_decay)
+        # EMA of the trained weights (DiT + text encoder), used by
+        # sampling/evaluation. Built from the RAW modules before the DDP
+        # wrap below; it never feeds back into training.
+        self.ema = (ModelEMA(self._ema_modules(), ema_decay)
+                    if ema_decay is not None else None)
+        # Opt-in latent cache: the VAE is frozen and every dataset item is
+        # deterministic, so each clip's latent is computed once (one clip
+        # at a time, so the value never depends on batch composition) and
+        # reused every epoch — skipping both the .npy load and the VAE
+        # encoder. Kept on CPU; not checkpointed (it is rebuilt on demand).
+        self.cache_latents = bool(cache_latents)
+        self._latent_cache: dict[int, tuple[torch.Tensor, str]] = {}
 
         # Optional pool worker shard (vidgen/pool.py): this worker trains
         # only on its disjoint slice of the dataset. None = full dataset,
@@ -223,6 +252,34 @@ class DiTTrainer:
             return global_batch
         return shard_batch(global_batch, self.batch_size, self.rank)
 
+    @torch.no_grad()
+    def _encode_batch(self, batch_idx) -> tuple[torch.Tensor, list[str]]:
+        """VAE latents (mu, before latent_scale) + captions for a batch."""
+        if not self.cache_latents:
+            clips, captions = [], []
+            for i in batch_idx:
+                c, cap = self.dataset[i]
+                clips.append(c)
+                captions.append(cap)
+            x = torch.stack(clips).to(self.device)  # [B,3,T,H,W]
+            mu, _ = self.vae.encode(x)
+            return mu, captions
+        mus, captions = [], []
+        for i in batch_idx:
+            hit = self._latent_cache.get(int(i))
+            if hit is None:
+                c, cap = self.dataset[i]
+                mu, _ = self.vae.encode(c.unsqueeze(0).to(self.device))
+                hit = (mu[0].cpu(), cap)
+                self._latent_cache[int(i)] = hit
+            mus.append(hit[0])
+            captions.append(hit[1])
+        return torch.stack(mus).to(self.device), captions
+
+    def _ema_modules(self) -> dict:
+        return {"dit": unwrap_model(self.dit),
+                "text_enc": unwrap_model(self.text_enc)}
+
     # ------------------------------------------------------------ one step
     def train_step(self) -> dict:
         import time
@@ -230,20 +287,15 @@ class DiTTrainer:
         t0 = time.perf_counter()
         self.opt.zero_grad()
         total_loss = 0.0
-        bin_mean = [0.0] * 10
+        # Per-timestep-bin loss over EVERY micro-batch of the step (it
+        # used to cover only the last one under --grad-accum).
+        bin_loss = torch.zeros(10, device=self.device)
+        bin_count = torch.zeros(10, device=self.device)
         last_batch = 0
         for _micro in range(self.grad_accum):
             batch_idx = self._next_batch_idx()
-            clips, captions = [], []
-            for i in batch_idx:
-                c, cap = self.dataset[i]
-                clips.append(c)
-                captions.append(cap)
-            x = torch.stack(clips).to(self.device)  # [B,3,T,H,W]
-
-            with torch.no_grad():
-                mu, _ = self.vae.encode(x)
-                x1 = mu * self.cfg.latent_scale
+            mu, captions = self._encode_batch(batch_idx)
+            x1 = mu * self.cfg.latent_scale
 
             b = x1.shape[0]
             last_batch = b
@@ -271,14 +323,12 @@ class DiTTrainer:
                 scaled.backward()
             total_loss += float(loss.detach())
 
-            if _micro == self.grad_accum - 1:
-                bins = timestep_bins(t)
-                bin_loss = torch.zeros(10, device=self.device)
-                bin_count = torch.zeros(10, device=self.device)
-                per = F.mse_loss(pred, target, reduction="none").mean(dim=(1, 2, 3, 4))
-                bin_loss.index_add_(0, bins, per.detach())
-                bin_count.index_add_(0, bins, torch.ones_like(per))
-                bin_mean = (bin_loss / bin_count.clamp_min(1)).tolist()
+            bins = timestep_bins(t)
+            per = F.mse_loss(pred.detach().float(), target,
+                             reduction="none").mean(dim=(1, 2, 3, 4))
+            bin_loss.index_add_(0, bins, per)
+            bin_count.index_add_(0, bins, torch.ones_like(per))
+        bin_mean = (bin_loss / bin_count.clamp_min(1)).tolist()
 
         # The DiT's gradients were all-reduced by DDP during backward;
         # the (unwrapped) text encoder's are synchronized explicitly so
@@ -290,26 +340,19 @@ class DiTTrainer:
             self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             list(self.dit.parameters()) + list(self.text_enc.parameters()), 1.0)
-        skipped_nonfinite = False
-        if self._nf_guard.check(total_loss / self.grad_accum,
-                                float(grad_norm)):
-            if self.scaler is not None:
-                self.scaler.step(self.opt)
-                self.scaler.update()
-            else:
-                self.opt.step()
-        else:
-            # Non-finite step: discard the poisoned gradients WITHOUT
-            # stepping, so the weights stay exactly as they were.
-            skipped_nonfinite = True
-            self.opt.zero_grad()
-        # The scheduler tracks OPTIMIZER steps: on a skipped
-        # (non-finite) step the weights did not move, so the schedule
-        # must not advance either — otherwise a burst of bad steps
-        # burns the LR horizon without any training happening
-        # (found in the 2026-10-23 repair audit).
-        if self.sched is not None and not skipped_nonfinite:
+        # Non-finite step: the poisoned gradients are discarded WITHOUT
+        # stepping, so the weights stay exactly as they were.
+        outcome = guarded_optimizer_step(
+            self.opt, self.scaler, self._nf_guard,
+            total_loss / self.grad_accum, float(grad_norm))
+        # The scheduler tracks OPTIMIZER steps: on a skipped step the
+        # weights did not move, so the schedule must not advance either
+        # — otherwise a burst of bad steps burns the LR horizon without
+        # any training happening (found in the 2026-10-23 repair audit).
+        if self.sched is not None and outcome == "stepped":
             self.sched.step()
+        if self.ema is not None and outcome == "stepped":
+            self.ema.update(self._ema_modules())
 
         secs = time.perf_counter() - t0
         samples = last_batch * self.world_size * self.grad_accum
@@ -319,8 +362,8 @@ class DiTTrainer:
                "bin_loss": [round(v, 5) for v in bin_mean],
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
-        if skipped_nonfinite:
-            rec["skipped_nonfinite"] = True
+        if outcome != "stepped":
+            rec[outcome] = True
         if str(self.device).startswith("cuda") and torch.cuda.is_available():
             rec["gpu_mem_mb"] = round(
                 torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
@@ -369,6 +412,7 @@ class DiTTrainer:
             "sampler": self.sampler.state_dict(),
             "loss_history": self.loss_history,
             "config": self.cfg.to_dict(),
+            "vae_ckpt": self.vae_ckpt,
         }
         if self.tokenizer is not None:
             payload["tokenizer"] = self.tokenizer.to_dict()
@@ -377,6 +421,8 @@ class DiTTrainer:
             payload["sched"] = self.sched.state_dict()
         if self.scaler is not None:
             payload["scaler"] = self.scaler.state_dict()
+        if self.ema is not None:
+            payload["ema"] = self.ema.state_dict()
         return payload
 
     def load_state_dict(self, payload: dict) -> None:
@@ -396,6 +442,18 @@ class DiTTrainer:
             self.sched.load_state_dict(payload["sched"])
         if "scaler" in payload and self.scaler is not None:
             self.scaler.load_state_dict(payload["scaler"])
+        if "ema" in payload:
+            if self.ema is None:
+                raise ValueError(
+                    "checkpoint carries EMA weights but this trainer was "
+                    "built without --ema-decay; resume via "
+                    "DiTTrainer.resume so the EMA is restored from "
+                    "train_config (dropping it would lose the average)")
+            self.ema.load_state_dict(payload["ema"])
+        elif self.ema is not None:
+            # EMA newly enabled on resume: start averaging from the
+            # resumed weights, not from this trainer's fresh init.
+            self.ema.reset(self._ema_modules())
         # Sampler reconciliation: the checkpoint's sampler describes the
         # dataset IT was saved on; this trainer's fresh sampler carries
         # the CURRENT dataset size and batch size. Capture them before
@@ -410,7 +468,8 @@ class DiTTrainer:
         self.loss_history = payload["loss_history"]
 
     def load_dit_weights(self, path: str,
-                         start_step: int | None = None) -> None:
+                         start_step: int | None = None,
+                         payload: dict | None = None) -> None:
         """Weights-only init from a donor DiT checkpoint.
 
         Mirrors VAETrainer.load_vae_weights: copies just the trained
@@ -424,10 +483,15 @@ class DiTTrainer:
         from the donor's stored step — pool rounds are numbered
         cumulatively across rounds. A plain donor checkpoint starts at
         step 0, exactly like a warm start.
+
+        ``payload``: the donor's already-loaded payload (``main`` reads it
+        once to detect depth/per-block config), to avoid a second load.
         """
-        payload = load_checkpoint(path)  # restores the donor's RNG state...
-        # ...which a fresh run must not keep (mirrors the VAE trainer:
-        # rank_seed(seed, 0) == seed, so single-process is unchanged).
+        if payload is None:
+            payload = load_checkpoint(path)
+        # A fresh run starts from its own seeded streams (mirrors the VAE
+        # trainer: rank_seed(seed, 0) == seed, so single-process is
+        # unchanged).
         seed_everything(rank_seed(self.seed, self.rank))
         if payload.get("kind") != "dit" or "dit" not in payload \
                 or "text_enc" not in payload:
@@ -456,6 +520,8 @@ class DiTTrainer:
         # Strict loads into the UNWRAPPED modules (plain keys either way).
         unwrap_model(self.dit).load_state_dict(payload["dit"])
         self.text_enc.load_state_dict(payload["text_enc"])
+        if self.ema is not None:
+            self.ema.reset(self._ema_modules())  # average from the donor
         self.init_from = path
         if start_step is not None:
             self.step = int(start_step)
@@ -483,6 +549,7 @@ class DiTTrainer:
         # one. The checkpoint's stored config is the source of truth.
         stored_cfg = payload.get("config") or {}
         kwargs["use_depth"] = bool(stored_cfg.get("use_depth", False))
+        kwargs["per_block_mod"] = bool(stored_cfg.get("per_block_mod", False))
         # Tokenizer too: a caption-mode checkpoint carries its exact
         # vocabulary; the text encoder must be built with it BEFORE the
         # weights load. A conflicting --tokenizer-vocab is an error.
@@ -500,13 +567,30 @@ class DiTTrainer:
                 "checkpoint config is caption-tokenizer mode but the "
                 "checkpoint carries no 'tokenizer' payload; it is "
                 "incomplete and cannot be resumed safely")
+        # The VAE defines the latent space the DiT was trained in. A
+        # resume that forgets --vae-ckpt must not quietly continue on a
+        # randomly initialized VAE's latents: reuse the stored one.
+        stored_vae = payload.get("vae_ckpt")
+        if stored_vae and not kwargs.get("vae_ckpt"):
+            if not os.path.isfile(stored_vae):
+                raise FileNotFoundError(
+                    f"checkpoint was trained with VAE {stored_vae!r}, which "
+                    "no longer exists at that path; pass --vae-ckpt with "
+                    "its new location")
+            kwargs["vae_ckpt"] = stored_vae
+        elif stored_vae and os.path.abspath(kwargs["vae_ckpt"]) \
+                != os.path.abspath(stored_vae):
+            print(f"WARNING: resuming with --vae-ckpt {kwargs['vae_ckpt']} "
+                  f"but the checkpoint was trained with {stored_vae}; the "
+                  "latent space changes unless they hold the same weights",
+                  file=sys.stderr)
         cli_scale = kwargs.pop("latent_scale", None)
         # Training options (schedule/AMP/accumulation) are part of the
         # run's identity: restore them from the checkpoint's
         # train_config unless the caller explicitly overrode them.
         stored_tc = payload.get("train_config") or {}
         for key in ("warmup_steps", "lr_schedule", "total_steps",
-                    "grad_accum", "amp"):
+                    "grad_accum", "amp", "ema_decay"):
             if kwargs.get(key) is None and key in stored_tc:
                 kwargs[key] = stored_tc[key]
         tr = cls(preset=payload["preset"], **kwargs)  # fresh init reseeds RNG...
@@ -622,6 +706,22 @@ def main() -> None:
     ap.add_argument("--depth-dropout", type=float, default=0.1,
                     help="probability of hiding a whole batch's depth maps "
                          "so text-only generation stays strong")
+    ap.add_argument("--ema-decay", type=float, default=None,
+                    help="keep an exponential moving average of the "
+                         "weights (e.g. 0.999) in every checkpoint; "
+                         "sampling and evaluation use it automatically. "
+                         "Default: off. On --resume the stored value wins.")
+    ap.add_argument("--cache-latents", action="store_true",
+                    help="encode each clip with the frozen VAE once and "
+                         "reuse the latent every epoch (kept in CPU RAM): "
+                         "after the first epoch, steps skip clip loading "
+                         "and the VAE encoder entirely")
+    ap.add_argument("--per-block-mod", action="store_true",
+                    help="give every DiT block its own zero-init offset on "
+                         "the shared AdaLN modulation (PixArt-alpha "
+                         "adaLN-single); a new architecture option, so "
+                         "only for fresh runs. On --resume the "
+                         "checkpoint's config decides.")
     args = ap.parse_args()
 
     # Resuming without an explicit --ckpt-dir continues writing next
@@ -667,6 +767,8 @@ def main() -> None:
                 warmup_steps=args.warmup_steps,
                 lr_schedule=args.lr_schedule,
                 grad_accum=args.grad_accum, amp=args.amp,
+                ema_decay=args.ema_decay,
+                cache_latents=args.cache_latents,
                 dist_info=dist_info)
             if args.grad_checkpoint:
                 unwrap_model(tr.dit).set_grad_checkpoint(True)
@@ -674,17 +776,25 @@ def main() -> None:
                 print(f"resumed from {args.resume} at step {tr.step}")
         else:
             use_depth = args.depth
-            if args.init_weights and not use_depth:
-                # Like resume, a depth-trained donor needs its depth stem
-                # built BEFORE its weights load; the donor's stored
-                # config is the source of truth.
-                donor = torch.load(args.init_weights, map_location="cpu",
-                                   weights_only=False)
-                if bool((donor.get("config") or {}).get("use_depth", False)):
+            per_block_mod = args.per_block_mod
+            donor = None
+            if args.init_weights:
+                # Like resume, a donor's architecture options (depth stem,
+                # per-block modulation) must be built BEFORE its weights
+                # load; the donor's stored config is the source of truth.
+                # Loaded once here and handed to load_dit_weights.
+                donor = load_checkpoint(args.init_weights)
+                donor_cfg = donor.get("config") or {}
+                if not use_depth and donor_cfg.get("use_depth", False):
                     use_depth = True
                     if main_rank:
                         print("note: donor checkpoint was trained with "
                               "depth conditioning; enabling --depth")
+                if not per_block_mod and donor_cfg.get("per_block_mod", False):
+                    per_block_mod = True
+                    if main_rank:
+                        print("note: donor checkpoint uses per-block "
+                              "modulation; enabling --per-block-mod")
             tr = DiTTrainer(preset=args.preset, seed=args.seed, lr=args.lr,
                             batch_size=args.batch_size, num_clips=args.num_clips,
                             device=args.device, ckpt_dir=args.ckpt_dir,
@@ -701,10 +811,14 @@ def main() -> None:
                             use_depth=use_depth,
                             depth_dropout=args.depth_dropout,
                             data_shard=args.data_shard,
+                            ema_decay=args.ema_decay,
+                            cache_latents=args.cache_latents,
+                            per_block_mod=per_block_mod,
                             dist_info=dist_info)
             if args.init_weights:
                 tr.load_dit_weights(args.init_weights,
-                                    start_step=args.start_step)
+                                    start_step=args.start_step,
+                                    payload=donor)
                 if main_rank:
                     print(f"initialized DiT weights from "
                           f"{args.init_weights} (starting step {tr.step})")

@@ -134,6 +134,97 @@ class NonFiniteGuard:
         return False
 
 
+def guarded_optimizer_step(optimizer, scaler, guard: NonFiniteGuard,
+                           loss_value: float, grad_norm: float) -> str:
+    """Step the optimizer unless the step is non-finite; returns the outcome.
+
+    Returns ``"stepped"``, ``"skipped_nonfinite"`` (the guard rejected the
+    loss/gradients) or ``"skipped_overflow"`` (fp16 GradScaler found inf
+    gradients and lowered its scale — routine early in fp16 training).
+
+    With a GradScaler, gradient overflow is the SCALER's job, not the
+    guard's: the guard only judges the loss there. Previously the guard
+    also rejected the inf grad norm of an ordinary overflow step and
+    skipped without ``scaler.update()``, so the scale never dropped and
+    the very next ``unscale_()`` raised "unscale_() has already been
+    called on this optimizer since the last update()" — every --amp fp16
+    run on CUDA died at its first overflow (found 2026-10-28). Every
+    path now ends with ``update()`` after the caller's ``unscale_()``.
+    """
+    if scaler is None:
+        if guard.check(loss_value, grad_norm):
+            optimizer.step()
+            return "stepped"
+        optimizer.zero_grad()
+        return "skipped_nonfinite"
+    if not guard.check(loss_value):
+        optimizer.zero_grad()
+        scaler.update()  # consume this step's inf checks; lowers the scale
+        return "skipped_nonfinite"
+    scale_before = scaler.get_scale()
+    scaler.step(optimizer)  # skips internally when grads overflowed
+    scaler.update()
+    if scaler.get_scale() < scale_before:
+        return "skipped_overflow"
+    return "stepped"
+
+
+class ModelEMA:
+    """Exponential moving average of one or more modules' weights.
+
+    Diffusion models sample noticeably better from EMA weights than from
+    the raw, noisy end-of-training weights. The shadow copy is fp32 and
+    lives on the modules' device; it never feeds back into training, so a
+    run with EMA follows exactly the same trajectory as one without.
+
+    The effective decay ramps up as ``min(decay, (1 + n) / (10 + n))``
+    over the first updates, so short runs and fresh warm starts are not
+    dominated by their random/donor initialization.
+    """
+
+    def __init__(self, modules: dict, decay: float):
+        if not 0.0 < float(decay) < 1.0:
+            raise ValueError(f"ema decay must be in (0, 1), got {decay}")
+        self.decay = float(decay)
+        self.updates = 0
+        self.shadow = {}
+        self.reset(modules)
+
+    @torch.no_grad()
+    def reset(self, modules: dict) -> None:
+        """Restart the average from the modules' current weights."""
+        self.updates = 0
+        self.shadow = {
+            name: {k: (v.detach().float().clone() if v.is_floating_point()
+                       else v.detach().clone())
+                   for k, v in m.state_dict().items()}
+            for name, m in modules.items()}
+
+    @torch.no_grad()
+    def update(self, modules: dict) -> None:
+        self.updates += 1
+        d = min(self.decay, (1 + self.updates) / (10 + self.updates))
+        for name, m in modules.items():
+            shadow = self.shadow[name]
+            for k, v in m.state_dict().items():
+                if v.is_floating_point():
+                    shadow[k].lerp_(v.detach().float(), 1.0 - d)
+                else:
+                    shadow[k].copy_(v)
+
+    def state_dict(self) -> dict:
+        out = {"decay": self.decay, "updates": self.updates}
+        out.update(self.shadow)
+        return out
+
+    def load_state_dict(self, state: dict) -> None:
+        self.decay = float(state["decay"])
+        self.updates = int(state["updates"])
+        for name, shadow in self.shadow.items():
+            for k, v in state[name].items():
+                shadow[k].copy_(v)
+
+
 def oom_guidance(context: str = "training") -> str:
     """Practical recovery steps printed when CUDA runs out of memory."""
     return (

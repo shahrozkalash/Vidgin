@@ -92,11 +92,14 @@ def shard_positions(num_items: int, shard: tuple[int, int]) -> list[int]:
 def load_payload_file(path: str) -> dict:
     """Load a checkpoint payload WITHOUT any RNG side effects.
 
-    Deliberately NOT ``vidgen.checkpoint.load_checkpoint``: merging and
-    inspecting are pure file operations and must not rewind the caller's
-    random streams the way a training resume does.
+    Merging and inspecting are pure file operations and must not rewind
+    the caller's random streams the way a training resume does — so the
+    RNG restore stays off. Worker checkpoints arrive from other machines,
+    so they go through the safe (allowlisted) loader.
     """
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    from vidgen.checkpoint import load_checkpoint
+
+    payload = load_checkpoint(path, map_location="cpu")
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: not a checkpoint payload (got "
                          f"{type(payload).__name__})")
@@ -138,6 +141,11 @@ def _verify_compatible(payloads: list[dict], names: list[str],
             raise ValueError(
                 f"config mismatch between {names[0]} and {name}: pool "
                 f"workers must train the identical architecture/config")
+        if p.get("tokenizer") != first.get("tokenizer"):
+            raise ValueError(
+                f"tokenizer mismatch between {names[0]} and {name}: "
+                f"averaging text-encoder weights is only meaningful when "
+                f"token ids name the same words in every worker")
         if require_same_step and p.get("step") != first.get("step"):
             raise ValueError(
                 f"step mismatch: {names[0]} is at step "
@@ -249,6 +257,13 @@ def merge_payloads(payloads: list[dict], base: dict | None = None,
             "step": first["step"],
         },
     }
+    # Not weights, but needed to USE the weights: a caption-mode DiT is
+    # unusable without its vocabulary (init-weights and sampling refuse
+    # it), and the VAE path is what sampling decodes with. Dropping them
+    # made every pooled caption-tokenizer round fail to start.
+    for key in ("tokenizer", "vae_ckpt"):
+        if first.get(key) is not None:
+            out[key] = copy.deepcopy(first[key])
     for key in WEIGHT_KEYS[kind]:
         out[key] = merged[key]
     return out

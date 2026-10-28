@@ -458,6 +458,11 @@ def grow_payload(payload: dict, target: str | VidgenConfig,
     src_depth = bool(src_cfg_dict.get("use_depth", False)) \
         if src_cfg_dict else False
     tgt_cfg.use_depth = src_depth or bool(force_depth)
+    if src_cfg_dict and src_cfg_dict.get("per_block_mod", False):
+        raise ValueError(
+            "growing a DiT trained with --per-block-mod is not supported: "
+            "its per-block modulation offsets have no transplant rule yet. "
+            "Grow a shared-modulation checkpoint instead.")
     tgt_cfg.validate()
 
     dit_grown, dit_stats = grow_dit_state_dict(
@@ -483,7 +488,7 @@ def grow_payload(payload: dict, target: str | VidgenConfig,
     grow_meta["total_params"] = total
     grow_meta["copied_params"] = copied
     grow_meta["copied_fraction"] = copied / total if total else 0.0
-    return {
+    out = {
         "kind": "dit",
         "preset": tgt_cfg.name,
         "step": 0,
@@ -492,6 +497,11 @@ def grow_payload(payload: dict, target: str | VidgenConfig,
         "text_enc": text_grown,
         "grow": grow_meta,
     }
+    if payload.get("vae_ckpt"):
+        # The VAE is the same at every size: the grown DiT still lives in
+        # (and must be sampled with) the source's latent space.
+        out["vae_ckpt"] = payload["vae_ckpt"]
+    return out
 
 
 def grow_checkpoint_file(in_path: str, out_path: str,

@@ -38,6 +38,11 @@ from vidgen.audio.voice_model import (
     count_voice_params,
 )
 
+# Config dataclasses pickled inside audio checkpoints ("cfg"): the
+# allowlist vidgen.checkpoint.load_checkpoint needs to load them safely.
+CHECKPOINT_CLASSES = (AudioConfig, AudioDiTConfig, VocoderConfig,
+                      VoiceModelConfig)
+
 __all__ = [
     "AudioConfig",
     "build_mel_basis",

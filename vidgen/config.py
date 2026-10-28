@@ -52,6 +52,10 @@ class VidgenConfig:
     use_depth: bool = False     # Dawood's 3D idea: depth-map conditioning (vidgen/depth.py).
                                 # Default off: every pre-2026-10-20 checkpoint and code path
                                 # behaves exactly as before; trainers opt in with --depth.
+    per_block_mod: bool = False  # PixArt-alpha "adaLN-single": each DiT block adds its own
+                                # zero-init learned offset to the shared AdaLN modulation, so
+                                # blocks are no longer forced to identical scale/shift/gates.
+                                # Default off: existing checkpoints load unchanged.
 
     # --- derived ---------------------------------------------------------
     @property

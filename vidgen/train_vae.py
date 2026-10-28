@@ -48,8 +48,8 @@ from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
 from vidgen.seed import seed_everything
 from vidgen.train_utils import (
-    NonFiniteGuard, amp_context, build_lr_scheduler, make_grad_scaler,
-    oom_guidance, validate_train_options,
+    NonFiniteGuard, amp_context, build_lr_scheduler, guarded_optimizer_step,
+    make_grad_scaler, oom_guidance, validate_train_options,
 )
 from vidgen.vae.model import CausalVAE, vae_loss
 
@@ -188,20 +188,12 @@ class VAETrainer:
         if self.scaler is not None:
             self.scaler.unscale_(self.opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(self.vae.parameters(), 1.0)
-        skipped_nonfinite = False
-        if self._nf_guard.check(total_loss / self.grad_accum,
-                                float(grad_norm)):
-            if self.scaler is not None:
-                self.scaler.step(self.opt)
-                self.scaler.update()
-            else:
-                self.opt.step()
-        else:
-            skipped_nonfinite = True
-            self.opt.zero_grad()
+        outcome = guarded_optimizer_step(
+            self.opt, self.scaler, self._nf_guard,
+            total_loss / self.grad_accum, float(grad_norm))
         # Scheduler tracks optimizer steps only — it must not
-        # advance on a skipped non-finite step (see train.py).
-        if self.sched is not None and not skipped_nonfinite:
+        # advance on a skipped step (see train.py).
+        if self.sched is not None and outcome == "stepped":
             self.sched.step()
         secs = time.perf_counter() - t0
         samples = last_batch * self.world_size * self.grad_accum
@@ -210,8 +202,8 @@ class VAETrainer:
                "lr": self.opt.param_groups[0]["lr"], "grad_norm": float(grad_norm),
                "secs": round(secs, 3),
                "clips_per_sec": round(samples / max(secs, 1e-9), 2)}
-        if skipped_nonfinite:
-            rec["skipped_nonfinite"] = True
+        if outcome != "stepped":
+            rec[outcome] = True
         if str(self.device).startswith("cuda") and torch.cuda.is_available():
             rec["gpu_mem_mb"] = round(
                 torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
@@ -282,9 +274,10 @@ class VAETrainer:
         its stored step so round numbering is cumulative; a plain donor
         starts at step 0, as a warm start always has.
         """
-        payload = load_checkpoint(path)  # restores the donor's RNG state...
-        # ...which a fresh run must not keep. Single-process this is the
-        # original seed_everything(self.seed); rank_seed(seed, 0) == seed.
+        payload = load_checkpoint(path)
+        # A fresh run starts from its own seeded streams. Single-process
+        # this is the original seed_everything(self.seed);
+        # rank_seed(seed, 0) == seed.
         seed_everything(rank_seed(self.seed, self.rank))
         if payload.get("kind") not in ("vae", "vae-weights-fp16") \
                 or "vae" not in payload:

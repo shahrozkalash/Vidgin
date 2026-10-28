@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import wave
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -51,6 +51,15 @@ from vidgen.audio.mel import (
 from vidgen.audio.sound_model import AudioDiT, AudioDiTConfig
 from vidgen.audio.vocoder import HiFiGANGenerator, VocoderConfig
 from vidgen.audio.voice_model import VidginVoiceTTS, VoiceModelConfig
+from vidgen.audio import CHECKPOINT_CLASSES
+from vidgen.audio.dialogue import (
+    DialogueLine,
+    build_speech_track,
+    describe_report,
+    load_dialogue_file,
+    load_voice_synthesizer,
+    parse_dialogue_line,
+)
 from vidgen.checkpoint import load_checkpoint
 
 SAMPLE_RATE = 22050
@@ -200,41 +209,36 @@ def generate_speech(
     device: str = "cpu",
     start_offset: float = VOICE_START_OFFSET_SEC,
 ) -> np.ndarray:
-    """Synthesize dialogue using Vidgin's Voice TTS + HiFi-GAN Vocoder."""
+    """Synthesize one dialogue line using Vidgin's Voice TTS + HiFi-GAN Vocoder.
+
+    Kept for compatibility; timed multi-line dialogue goes through
+    :func:`generate_dialogue_track`.
+    """
+    track, _ = generate_dialogue_track(
+        [DialogueLine(start_offset, dialogue)], voice_ckpt, vocoder_ckpt,
+        target_duration, device=device)
+    return track
+
+
+def generate_dialogue_track(
+    lines: List[DialogueLine],
+    voice_ckpt: str,
+    vocoder_ckpt: str,
+    target_duration: float,
+    device: str = "cpu",
+    min_speed_scale: float = 0.6,
+) -> Tuple[np.ndarray, list]:
+    """Voice timed dialogue lines onto one track (models loaded once).
+
+    Returns ``(track, report)``; see vidgen/audio/dialogue.py for the
+    placement rules (no overlaps, speed-fit before cutting, full report).
+    """
     if not HAS_TORCH:
         raise RuntimeError("PyTorch is required to run Vidgin audio inference.")
-
-    dev = torch.device(device)
-    # 1. Load Voice TTS model
-    voice_payload = load_checkpoint(voice_ckpt, map_location=str(dev))
-    voice_cfg = voice_payload.get("cfg", VoiceModelConfig())
-    voice_model = VidginVoiceTTS(voice_cfg).to(dev)
-    voice_model.load_state_dict(voice_payload["model"])
-    voice_model.eval()
-
-    # 2. Load Vocoder model
-    vocoder_payload = load_checkpoint(vocoder_ckpt, map_location=str(dev))
-    vocoder_cfg = vocoder_payload.get("cfg", VocoderConfig())
-    vocoder = HiFiGANGenerator(vocoder_cfg).to(dev)
-    vocoder.load_state_dict(vocoder_payload["generator"])
-    vocoder.eval()
-
-    # 3. Generate mel spectrogram from dialogue
-    with torch.no_grad():
-        mel = voice_model.synthesize(dialogue, device=str(dev))  # [1, 80, frames]
-        wav_tensor = vocoder(mel).squeeze().cpu().numpy()  # 1D array
-
-    # 4. Align to target duration with start offset
-    total_samples = max(1, int(round(target_duration * SAMPLE_RATE)))
-    offset_samples = int(round(start_offset * SAMPLE_RATE))
-    result = np.zeros(total_samples, dtype=np.float32)
-
-    available = max(0, total_samples - offset_samples)
-    to_copy = min(len(wav_tensor), available)
-    if to_copy > 0:
-        result[offset_samples : offset_samples + to_copy] = wav_tensor[:to_copy]
-
-    return result
+    synthesize = load_voice_synthesizer(voice_ckpt, vocoder_ckpt, device)
+    return build_speech_track(lines, synthesize, target_duration,
+                              sample_rate=SAMPLE_RATE,
+                              min_speed_scale=min_speed_scale)
 
 
 def generate_ambience(
@@ -251,14 +255,16 @@ def generate_ambience(
 
     dev = torch.device(device)
     # 1. Load Audio DiT
-    sound_payload = load_checkpoint(sound_ckpt, map_location=str(dev))
+    sound_payload = load_checkpoint(sound_ckpt, map_location=str(dev),
+        safe_classes=CHECKPOINT_CLASSES)
     sound_cfg = sound_payload.get("cfg", AudioDiTConfig())
     sound_model = AudioDiT(sound_cfg).to(dev)
     sound_model.load_state_dict(sound_payload["model"])
     sound_model.eval()
 
     # 2. Load Vocoder
-    vocoder_payload = load_checkpoint(vocoder_ckpt, map_location=str(dev))
+    vocoder_payload = load_checkpoint(vocoder_ckpt, map_location=str(dev),
+        safe_classes=CHECKPOINT_CLASSES)
     vocoder_cfg = vocoder_payload.get("cfg", VocoderConfig())
     vocoder = HiFiGANGenerator(vocoder_cfg).to(dev)
     vocoder.load_state_dict(vocoder_payload["generator"])
@@ -398,62 +404,107 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=25, help="ODE diffusion steps for sound generation")
     parser.add_argument("--device", default="cpu", help="Device (cpu, cuda)")
     parser.add_argument("--out", required=True, help="Output .mp4 video path with audio")
+    parser.add_argument("--line", action="append", default=[], metavar="START:TEXT",
+                        help="timed dialogue line, repeatable, e.g. --line '1.5: Where are we going?'")
+    parser.add_argument("--dialogue-file", default=None,
+                        help="text file of timed dialogue lines ('START: TEXT' per row, '#' comments)")
+    parser.add_argument("--no-ambience", action="store_true",
+                        help="voice only: skip the background-sound model (no sound checkpoint needed)")
+    parser.add_argument("--min-speech-speed", type=float, default=0.6,
+                        help="fastest allowed speech when fitting a line into its slot "
+                             "(voice-model duration scale; 1.0 = never speed up)")
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def collect_dialogue(dialogue: Optional[str] = None, lines=(),
+                     dialogue_file: Optional[str] = None) -> List[DialogueLine]:
+    """All dialogue from the CLI forms: --dialogue (one untimed line at the
+    default offset), repeatable --line 'START: TEXT', and --dialogue-file."""
+    out: List[DialogueLine] = []
+    if dialogue and dialogue.strip():
+        out.append(DialogueLine(VOICE_START_OFFSET_SEC, dialogue.strip()))
+    out.extend(parse_dialogue_line(spec) for spec in lines)
+    if dialogue_file:
+        out.extend(load_dialogue_file(dialogue_file))
+    return out
+
+
+def add_audio_to_video(
+    video: str,
+    out: str,
+    caption: str,
+    lines: List[DialogueLine],
+    sound_prompt: Optional[str] = None,
+    sound_ckpt: str = "checkpoints/sound/latest.pt",
+    vocoder_ckpt: str = "checkpoints/vocoder/latest.pt",
+    voice_ckpt: str = "checkpoints/voice/latest.pt",
+    steps: int = 25,
+    device: str = "cpu",
+    ambience: bool = True,
+    min_speed_scale: float = 0.6,
+) -> dict:
+    """Voice and/or score a silent video; returns the ffprobe metadata plus
+    the dialogue placement report under ``"dialogue"``."""
+    if not lines and not ambience:
+        raise ValueError("nothing to add: no dialogue lines and ambience is off")
     check_ffmpeg_installed()
 
-    info = get_video_info(args.video)
+    info = get_video_info(video)
     duration = max(info["duration"], 1.0)
 
     # 1. Checkpoint Verification - Strictly enforced!
     ensure_checkpoint(
-        args.vocoder_ckpt,
+        vocoder_ckpt,
         "vocoder",
         "python scripts/train_audio.py --target vocoder --steps 1000 --batch-size 4",
     )
-    ensure_checkpoint(
-        args.sound_ckpt,
-        "sound model",
-        "python scripts/train_audio.py --target sound --steps 1000 --batch-size 4",
-    )
-    if args.dialogue and args.dialogue.strip():
+    if ambience:
         ensure_checkpoint(
-            args.voice_ckpt,
+            sound_ckpt,
+            "sound model",
+            "python scripts/train_audio.py --target sound --steps 1000 --batch-size 4",
+        )
+    if lines:
+        ensure_checkpoint(
+            voice_ckpt,
             "voice model",
             "python scripts/train_audio.py --target voice --steps 1000 --batch-size 4",
         )
 
-    print(f"\n[add_audio] Processing video: {args.video} ({duration:.2f}s)")
+    print(f"\n[add_audio] Processing video: {video} ({duration:.2f}s)")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Step 1: Voice Dialogue
         voice_audio = None
-        if args.dialogue and args.dialogue.strip():
-            print(f"[1/4] VOICE: Synthesizing dialogue with VidginVoiceTTS: \"{args.dialogue.strip()}\" ...")
-            voice_audio = generate_speech(
-                dialogue=args.dialogue.strip(),
-                voice_ckpt=args.voice_ckpt,
-                vocoder_ckpt=args.vocoder_ckpt,
-                target_duration=duration,
-                device=args.device,
-            )
+        report: list = []
+        if lines:
+            print(f"[1/4] VOICE: Synthesizing {len(lines)} dialogue line(s) with VidginVoiceTTS ...")
+            voice_audio, report = generate_dialogue_track(
+                lines, voice_ckpt, vocoder_ckpt, duration,
+                device=device, min_speed_scale=min_speed_scale)
+            for r in report:
+                if not r["skipped"]:
+                    print(f"      {r['start']:6.2f}s-{r['end']:6.2f}s  {r['text']}")
+            for note in describe_report(report):
+                print(f"      WARNING: {note}")
         else:
             print("[1/4] VOICE: No dialogue provided, skipping voice synthesis.")
 
         # Step 2: Background Ambience Plan & Generate
-        sound_plan = plan_background_sound(args.caption, custom_prompt=args.sound_prompt)
-        print(f"[2/4] SOUND: Generating background ambience with AudioDiT -> \"{sound_plan}\" ...")
-        bg_audio = generate_ambience(
-            sound_prompt=sound_plan,
-            sound_ckpt=args.sound_ckpt,
-            vocoder_ckpt=args.vocoder_ckpt,
-            target_duration=duration,
-            steps=args.steps,
-            device=args.device,
-        )
+        if ambience:
+            sound_plan = plan_background_sound(caption, custom_prompt=sound_prompt)
+            print(f"[2/4] SOUND: Generating background ambience with AudioDiT -> \"{sound_plan}\" ...")
+            bg_audio = generate_ambience(
+                sound_prompt=sound_plan,
+                sound_ckpt=sound_ckpt,
+                vocoder_ckpt=vocoder_ckpt,
+                target_duration=duration,
+                steps=steps,
+                device=device,
+            )
+        else:
+            print("[2/4] SOUND: Ambience off, voice-only track.")
+            bg_audio = np.zeros(max(1, int(round(duration * SAMPLE_RATE))), dtype=np.float32)
 
         # Step 3: Mixing with Ducking
         print("[3/4] MIXING: Mixing voice over background with 35% ducking & -1 dB normalization ...")
@@ -462,12 +513,31 @@ def main() -> None:
         write_wav_file(mixed_wav, mixed_audio, sample_rate=SAMPLE_RATE)
 
         # Step 4: Muxing and ffprobe verification
-        print(f"[4/4] MUXING: Muxing with ffmpeg -> {args.out} ...")
-        meta = mux_and_verify(args.video, mixed_wav, args.out)
+        print(f"[4/4] MUXING: Muxing with ffmpeg -> {out} ...")
+        meta = mux_and_verify(video, mixed_wav, out)
         print(
             f"[add_audio] SUCCESS! Verified with ffprobe: {meta['video_streams']} video "
             f"({meta['video_duration']:.2f}s) and {meta['audio_streams']} audio ({meta['audio_duration']:.2f}s)."
         )
+    meta["dialogue"] = report
+    return meta
+
+
+def main() -> None:
+    args = parse_args()
+    try:
+        lines = collect_dialogue(args.dialogue, args.line, args.dialogue_file)
+    except ValueError as e:
+        sys.exit(f"[ERROR] {e}")
+    if not lines and args.no_ambience:
+        sys.exit("[ERROR] --no-ambience needs dialogue (--dialogue, --line or --dialogue-file)")
+    add_audio_to_video(
+        args.video, args.out, args.caption, lines,
+        sound_prompt=args.sound_prompt, sound_ckpt=args.sound_ckpt,
+        vocoder_ckpt=args.vocoder_ckpt, voice_ckpt=args.voice_ckpt,
+        steps=args.steps, device=args.device, ambience=not args.no_ambience,
+        min_speed_scale=args.min_speech_speed,
+    )
 
 
 if __name__ == "__main__":

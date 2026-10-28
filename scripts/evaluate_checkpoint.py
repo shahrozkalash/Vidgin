@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 
-from vidgen.checkpoint import load_checkpoint
+from vidgen.checkpoint import inference_weights, load_checkpoint
 from vidgen.config import VidgenConfig, get_preset, resolve_device
 from vidgen.data.clips import FolderClipDataset
 from vidgen.dit.model import DiT
@@ -56,7 +56,8 @@ DEFAULT_PROMPTS = [
 
 def generate_clips(dit_ckpt: str, vae_ckpt: str | None, prompts, seeds,
                    steps: int, cfg_scale: float, method: str,
-                   device, out_dir: str) -> list[np.ndarray]:
+                   device, out_dir: str,
+                   use_ema: bool = True) -> list[np.ndarray]:
     """Generate one clip per (prompt, seed); save MP4 + npy per clip."""
     payload = load_checkpoint(dit_ckpt, map_location=str(device))
     if payload.get("kind") != "dit":
@@ -76,11 +77,13 @@ def generate_clips(dit_ckpt: str, vae_ckpt: str | None, prompts, seeds,
     if getattr(cfg, "text_tokenizer", "hash") == "caption" and tokenizer is None:
         raise ValueError("caption-mode checkpoint carries no tokenizer "
                          "payload; it is incomplete")
+    dit_sd, text_sd, used_ema = inference_weights(payload, use_ema)
+    print(f"{dit_ckpt}: evaluating {'EMA' if used_ema else 'raw'} weights")
     text_enc = build_text_encoder(cfg, tokenizer=tokenizer).to(device)
-    text_enc.load_state_dict(payload["text_enc"])
+    text_enc.load_state_dict(text_sd)
     text_enc.eval()
     dit = DiT(cfg).to(device)
-    dit.load_state_dict(payload["dit"])
+    dit.load_state_dict(dit_sd)
     dit.eval()
 
     os.makedirs(out_dir, exist_ok=True)
@@ -143,6 +146,9 @@ def main() -> int:
                     help="training dataset for the memorization check")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--no-ema", action="store_true",
+                    help="evaluate the raw weights even when the "
+                         "checkpoint carries EMA weights")
     args = ap.parse_args()
 
     if args.prompts_file:
@@ -169,7 +175,7 @@ def main() -> int:
     candidate = generate_clips(
         args.dit_ckpt, args.vae_ckpt, prompts, seeds, args.steps,
         args.cfg, args.method, device,
-        os.path.join(args.out_dir, "candidate"))
+        os.path.join(args.out_dir, "candidate"), use_ema=not args.no_ema)
     report["candidate"] = {
         "checkpoint": args.dit_ckpt,
         "metrics": evaluate_clip_set(candidate, train_clips),
@@ -178,7 +184,7 @@ def main() -> int:
         baseline = generate_clips(
             args.baseline, args.vae_ckpt, prompts, seeds, args.steps,
             args.cfg, args.method, device,
-            os.path.join(args.out_dir, "baseline"))
+            os.path.join(args.out_dir, "baseline"), use_ema=not args.no_ema)
         report["baseline"] = {
             "checkpoint": args.baseline,
             "metrics": evaluate_clip_set(baseline, train_clips),

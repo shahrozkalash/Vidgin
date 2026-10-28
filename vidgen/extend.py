@@ -105,8 +105,13 @@ def _crossfade_stitch(acc: np.ndarray, window: np.ndarray,
 def generate_long(dit, vae, text_enc, cfg: VidgenConfig, prompt: str,
                   segments: int = 1, steps: int = 20, method: str = "euler",
                   cfg_scale: float = 7.5, seed: int = 0, device: str = "cpu",
-                  ctx_latent: int = 2, blend: int = 2) -> np.ndarray:
-    """Generate a chained clip. Returns [T_total, H, W, 3] float32 in [-1, 1]."""
+                  ctx_latent: int = 2, blend: int = 2,
+                  first_prefix: torch.Tensor | None = None) -> np.ndarray:
+    """Generate a chained clip. Returns [T_total, H, W, 3] float32 in [-1, 1].
+
+    ``first_prefix`` (``[1, C, 1, h, w]``, from vidgen.i2v.image_latent)
+    makes segment 1 start from an image: image-to-video for long clips.
+    """
     if segments < 1:
         raise ValueError(f"segments must be >= 1, got {segments}")
     if not 0 < ctx_latent < cfg.latent_t:
@@ -126,10 +131,14 @@ def generate_long(dit, vae, text_enc, cfg: VidgenConfig, prompt: str,
     def decode_window(z: torch.Tensor) -> np.ndarray:
         return _to_frame_array(vae.decode(z / cfg.latent_scale))
 
-    # segment 1: unconditional-on-past, exactly the sample.py path
+    # segment 1: unconditional-on-past (exactly the sample.py path), or
+    # clamped to a start image's latent frame for image-to-video
+    first = {}
+    if first_prefix is not None:
+        first = {"prefix_latent": first_prefix.to(device), "prefix_t": 1}
     z = sample_latents(dit, lat_shape, text, text_mask, null_text, null_mask,
                        method=method, num_steps=steps, cfg_scale=cfg_scale,
-                       seed=seed, device=device)
+                       seed=seed, device=device, **first)
     frames = decode_window(z)
 
     for k in range(1, segments):

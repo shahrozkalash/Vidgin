@@ -71,6 +71,7 @@ from vidgen.audio.voice_model import (
     VoiceModelConfig,
     count_voice_params,
 )
+from vidgen.audio import CHECKPOINT_CLASSES
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
 from vidgen.config import resolve_device
 from vidgen.flow import flow_loss, sample_shifted_logit_normal
@@ -236,7 +237,9 @@ class SoundModelTrainer:
         save_checkpoint(path, payload)
 
     def resume(self, path: str) -> None:
-        payload = load_checkpoint(path, map_location=str(self.device))
+        payload = load_checkpoint(path, map_location=str(self.device),
+                                  restore_rng=True,
+                                  safe_classes=CHECKPOINT_CLASSES)
         assert payload.get("target") == "sound", f"Expected sound checkpoint, got {payload.get('target')}"
         self.model.load_state_dict(payload["model"])
         self.opt.load_state_dict(payload["opt"])
@@ -332,7 +335,9 @@ class VoiceModelTrainer:
         save_checkpoint(path, payload)
 
     def resume(self, path: str) -> None:
-        payload = load_checkpoint(path, map_location=str(self.device))
+        payload = load_checkpoint(path, map_location=str(self.device),
+                                  restore_rng=True,
+                                  safe_classes=CHECKPOINT_CLASSES)
         assert payload.get("target") == "voice", f"Expected voice checkpoint, got {payload.get('target')}"
         self.model.load_state_dict(payload["model"])
         self.opt.load_state_dict(payload["opt"])
@@ -461,7 +466,9 @@ class VocoderTrainer:
         save_checkpoint(path, payload)
 
     def resume(self, path: str) -> None:
-        payload = load_checkpoint(path, map_location=str(self.device))
+        payload = load_checkpoint(path, map_location=str(self.device),
+                                  restore_rng=True,
+                                  safe_classes=CHECKPOINT_CLASSES)
         assert payload.get("target") == "vocoder", f"Expected vocoder checkpoint, got {payload.get('target')}"
         self.generator.load_state_dict(payload["generator"])
         self.mpd.load_state_dict(payload["mpd"])

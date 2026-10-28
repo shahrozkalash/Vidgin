@@ -169,10 +169,20 @@ class DiTBlock(nn.Module):
         kv = self.cross_kv(text).view(b, -1, 2, self.heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]
         attn_mask = None
+        has_text = None
         if text_mask is not None:
+            # A fully-masked row (the CFG null embedding, an empty
+            # caption) attends to nothing. torch >= 2.5 returns zeros for
+            # it, older torch returns NaN — so the result depended on the
+            # install. Unmask such rows and zero their output here: every
+            # torch now gives the zeros, rows with text are untouched.
+            has_text = text_mask.any(dim=1)
+            text_mask = text_mask | ~has_text[:, None]
             # True = keep; SDPA wants True = attend
             attn_mask = text_mask[:, None, None, :].expand(b, 1, n, -1)
         ca = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        if has_text is not None:
+            ca = ca * has_text.view(b, 1, 1, 1).to(ca.dtype)
         ca = ca.transpose(1, 2).reshape(b, n, d)
         x = x + ga2.unsqueeze(1) * self.cross_out(ca)
         # --- ffn ---
@@ -216,6 +226,13 @@ class DiT(nn.Module):
         self.adaLN_shared = nn.Linear(d.dim, 9 * d.dim)
         nn.init.zeros_(self.adaLN_shared.weight)
         nn.init.zeros_(self.adaLN_shared.bias)
+        # Optional per-block offsets on the shared modulation (PixArt-alpha
+        # adaLN-single): without them every block receives the identical
+        # 9 x D modulation. Zero-init, so a fresh model equals the shared one.
+        if getattr(cfg, "per_block_mod", False):
+            self.block_mod = nn.Parameter(torch.zeros(d.layers, 9, d.dim))
+        else:
+            self.block_mod = None
         self.text_proj = TextProjector(cfg.text_dim, d.dim, cfg.text_max_len)
         self.blocks = nn.ModuleList(
             [DiTBlock(d.dim, d.heads, d.ffn, d.rope_split) for _ in range(d.layers)]
@@ -267,10 +284,14 @@ class DiT(nn.Module):
                 "depth was passed but this DiT was built without depth "
                 "conditioning (config use_depth=False)")
         c = self.t_embedder(timesteps)
-        mod9 = self.adaLN_shared(c).chunk(9, dim=-1)
+        shared = self.adaLN_shared(c)                    # [B, 9*D]
+        mod9 = shared.chunk(9, dim=-1)
         text, text_mask = self.text_proj(text, text_mask)
         pos = self._positions(latent.device)
-        for blk in self.blocks:
+        for i, blk in enumerate(self.blocks):
+            if self.block_mod is not None:
+                mod9 = (shared.view(b, 9, -1)
+                        + self.block_mod[i].to(shared.dtype)).unbind(1)
             if self.grad_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(
                     blk, x, mod9, text, text_mask, pos, use_reentrant=False)
