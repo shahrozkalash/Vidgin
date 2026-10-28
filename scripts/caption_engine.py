@@ -393,7 +393,11 @@ class LocalCompatibleBackend(Backend):
     def describe(self,frames,facts):
         content=[{'type':'text','text':skeptic_prompt(facts['skeptic_caption'],facts.get('frame_positions',[])) if facts.get('skeptic_request') else prompt(facts)}]
         for f in frames:
-            content.append({'type':'image_url','image_url':{'url':'data:image/png;base64,'+(f if isinstance(f,str) else base64.b64encode(png_bytes(f)).decode('ascii'))}})
+            if isinstance(f,str):
+                mime='image/jpeg' if (facts.get('image_format') if isinstance(facts,dict) else None)=='jpeg' else 'image/png'
+                content.append({'type':'image_url','image_url':{'url':f'data:{mime};base64,'+f}})
+            else:
+                content.append({'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(png_bytes(f)).decode('ascii')}})
         r=self.session.post(self.url+'/chat/completions',json={'model':self.model,'messages':[{'role':'user','content':content}], 'temperature':0,'max_tokens':450},timeout=240)
         r.raise_for_status(); s=r.json()['choices'][0]['message']['content']
         return json.loads(s)
