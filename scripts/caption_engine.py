@@ -393,11 +393,7 @@ class LocalCompatibleBackend(Backend):
     def describe(self,frames,facts):
         content=[{'type':'text','text':skeptic_prompt(facts['skeptic_caption'],facts.get('frame_positions',[])) if facts.get('skeptic_request') else prompt(facts)}]
         for f in frames:
-            if isinstance(f,str):
-                mime='image/jpeg' if (facts.get('image_format') if isinstance(facts,dict) else None)=='jpeg' else 'image/png'
-                content.append({'type':'image_url','image_url':{'url':f'data:{mime};base64,'+f}})
-            else:
-                content.append({'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(png_bytes(f)).decode('ascii')}})
+            content.append({'type':'image_url','image_url':{'url':'data:image/'+('jpeg' if facts.get('image_format')=='jpeg' else 'png')+';base64,'+(f if isinstance(f,str) else base64.b64encode(png_bytes(f)).decode('ascii'))}})
         r=self.session.post(self.url+'/chat/completions',json={'model':self.model,'messages':[{'role':'user','content':content}], 'temperature':0,'max_tokens':450},timeout=240)
         r.raise_for_status(); s=r.json()['choices'][0]['message']['content']
         return json.loads(s)
@@ -519,12 +515,12 @@ def find_clip(manifest,entry):
     return None
 
 
-def atomic_lines(path,lines):
+def atomic_lines(path,lines,backup=True):
     fd,tmp=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
     try:
         with os.fdopen(fd,'wb') as f:
             f.writelines(lines); f.flush(); os.fsync(f.fileno())
-        shutil.copy2(path,str(path)+'.bak')
+        if backup: shutil.copy2(path,str(path)+'.bak')
         os.replace(tmp,path)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
@@ -593,7 +589,8 @@ def registry_append(path,items):
 
 class BreakerOpen(Exception):pass
 
-def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard=None,frame_scale=None,image_format='png',skeptic=False,skeptic_backend=None,registry=None,breaker=5):
+def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard=None,frame_scale=None,image_format='png',skeptic=False,skeptic_backend=None,registry=None,breaker=5,flush_every=10):
+    if flush_every<0:raise ValueError('--flush-every must be >= 0')
     if frame_scale is None:frame_scale=1 if isinstance(backend,StubBackend) else 2
     raw=path.read_bytes().splitlines(keepends=True);out=[]
     stats={'processed':0,'skipped':0,'failed':0,'errors':collections.Counter(),
@@ -601,6 +598,27 @@ def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard
            'grounding_flags':0,'candidate_margins':[],'image_encodes':0,'normalizations':0,'skeptic_rewrites':0,'reused':0,'breaker_open':False}
     consecutive=0; pending=[]; registry_data=registry_load(registry) if registry else {}
     start=time.monotonic()
+    original_backup_done=False
+    flushed_count=0
+    last_flushed=0
+    def write_progress():
+        atomic_json(path.parent/'.caption_progress.json',{
+            'manifest':str(path.name),'worker_pid':os.getpid(),'processed':stats['processed'],
+            'skipped':stats['skipped'],'failed':stats['failed'],'reused':stats['reused'],
+            'breaker_open':stats['breaker_open'],'failure_categories':dict(stats['errors'])})
+    def flush_manifest(final=False):
+        nonlocal original_backup_done,last_flushed
+        # A prefix of complete output rows, followed by byte-for-byte original untouched rows.
+        current=out+([] if final else raw[len(out):])
+        if len(current)!=len(raw):raise AssertionError('incremental flush lost rows')
+        if current!=raw and (final or len(out)>last_flushed):
+            atomic_lines(path,current,backup=not original_backup_done)
+            original_backup_done=True
+            last_flushed=len(out)
+        if registry is not None and pending:
+            registry_append(registry,pending)
+            pending.clear()
+        write_progress()
     for i,line in enumerate(raw):
         if STOP:out.extend(raw[i:]);break
         try:
@@ -625,6 +643,9 @@ def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard
                 obj.update(reused);obj['vidgin_hash']=digest
                 out.append((json.dumps(obj,ensure_ascii=False,separators=(',',':'))+'\n').encode())
                 stats['reused']+=1;stats['processed']+=1;consecutive=0
+                flushed_count+=1
+                if flush_every and flushed_count>=flush_every:
+                    flush_manifest();flushed_count=0
                 continue
             stats['load_times'].append(time.monotonic()-t);t=time.monotonic()
             selected,facts=analyze(frames,depth)
@@ -682,6 +703,9 @@ def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard
             if registry is not None:
                 reusable={k:v for k,v in obj.items() if k in result or k in ('vidgin_backend','vidgin_model','vidgin_hash','vidgin_seconds','vidgin_frames_sent','vidgin_image_encodes')}
                 registry_data.setdefault(digest,reusable);pending.append((digest,reusable))
+            flushed_count+=1
+            if flush_every and flushed_count>=flush_every:
+                flush_manifest();flushed_count=0
         except Exception as e:
             out.append(line);stats['failed']+=1;category=classify_error(e);stats['errors'][category]+=1
             consecutive=consecutive+1 if category in ('timeout','http','bad_json') else 0
@@ -693,11 +717,7 @@ def process_manifest(path,backend,force=False,quiet=False,self_check=False,shard
         if not quiet and (i+1)%10==0:
             rate=(time.monotonic()-start)/(i+1)
             print(f'{path.name} {i+1}/{len(raw)} ETA {(len(raw)-i-1)*rate:.0f}s',flush=True)
-    if out!=raw:atomic_lines(path,out)
-    if registry is not None:registry_append(registry,pending)
-    atomic_json(path.parent/'.caption_progress.json',{
-        'manifest':str(path.name),'worker_pid':os.getpid(),'processed':stats['processed'],'skipped':stats['skipped'],
-        'failed':stats['failed'],'reused':stats['reused'],'breaker_open':stats['breaker_open'],'failure_categories':dict(stats['errors'])})
+    flush_manifest(final=True)
     return stats
 
 def manifests(root):
@@ -1160,6 +1180,120 @@ def round5_tests():
             server.shutdown();server.server_close();thread.join(timeout=3)
 
 
+
+def round6_tests():
+    # Exercise SIGKILL recovery and HTTP follow-up requests.
+    import subprocess, threading, contextlib
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    with tempfile.TemporaryDirectory() as td:
+        root=Path(td)
+        # The subprocess is killed only after an incremental checkpoint has been observed.
+        folder=root/'crash';folder.mkdir()
+        arr=np.zeros((33,32,32,3),dtype=np.uint8)
+        arr[:,7:25,7:25]=[185,60,25]
+        for j in range(24):
+            frame=arr.copy();frame[:,8:14,8:14,0]=(j*15)%256
+            np.save(folder/f'clip_{j:06d}.npy',frame)
+        manifest=folder/'manifest.jsonl'
+        original=[(json.dumps({'file':f'clip_{j:06d}.npy','caption_weak':'weak'})+'\n').encode() for j in range(24)]
+        manifest.write_bytes(b''.join(original))
+        worker_code='''
+import sys,time,importlib
+sys.path.insert(0,sys.argv[1])
+v=importlib.import_module(sys.argv[3])
+from pathlib import Path
+class Slow(v.StubBackend):
+ def describe(self,frames,facts):
+  time.sleep(.3)
+  return super().describe(frames,facts)
+v.process_manifest(Path(sys.argv[2]),Slow(),quiet=True,flush_every=2)
+'''
+        cmd=[sys.executable,'-c',worker_code,str(Path(__file__).resolve().parent),str(manifest),Path(__file__).stem]
+        proc=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        try:
+            deadline=time.monotonic()+35
+            while time.monotonic()<deadline:
+                if proc.poll() is not None:raise AssertionError('worker finished before kill checkpoint')
+                progress=folder/'.caption_progress.json'
+                if progress.exists():
+                    try:
+                        if json.loads(progress.read_text()).get('processed',0)>=2:break
+                    except (ValueError,OSError):pass
+                time.sleep(.04)
+            else:raise AssertionError('incremental checkpoint not reached')
+            proc.kill();proc.wait(timeout=5)
+            persisted=manifest.read_bytes().splitlines(keepends=True)
+            assert len(persisted)==24 and 2<=sum(json.loads(x).get('caption_source')=='vlm' for x in persisted)<24
+            first_count=sum(json.loads(x).get('caption_source')=='vlm' for x in persisted)
+            assert all(x==original[i] for i,x in enumerate(persisted) if json.loads(x).get('caption_source')!='vlm')
+            assert Path(str(manifest)+'.bak').read_bytes()==b''.join(original)
+            resumed=process_manifest(manifest,StubBackend(),quiet=True,flush_every=2)
+            assert resumed['processed']+first_count==24 and resumed['failed']==0
+            assert resumed['skipped']==first_count
+            assert len(manifest.read_bytes().splitlines())==24
+            assert all(json.loads(x).get('vidgin_hash') for x in manifest.read_bytes().splitlines())
+            assert Path(str(manifest)+'.bak').read_bytes()==b''.join(persisted), 'resume backup is pre-resume state'
+            print('flushkill PASS: SIGKILL leaves complete JSONL, original rows preserved; hash resume skips persisted rows')
+        finally:
+            if proc.poll() is None:proc.kill();proc.wait(timeout=5)
+        # A request-aware server: no reliance on request ordinal.
+        seen=[]
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_POST(self):
+                data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                if self.path=='/api/chat':
+                    msg=data['messages'][0]['content']
+                elif self.path=='/chat/completions':
+                    msg=data['messages'][0]['content'][0]['text']
+                else:self.send_error(404);return
+                scenario=self.server.scenario
+                repair='\"repair_request\"' in msg
+                alternate='\"self_check\"' in msg
+                skeptic='INDEPENDENT ADVERSARIAL VISUAL CHECK' in msg
+                rewrite='\"rewrite_request\"' in msg
+                seen.append((scenario,self.path,repair,alternate,skeptic,rewrite))
+                if skeptic:
+                    result={'claims':[{'claim':'a forbidden claim','verdict':'UNSUPPORTED','frames':'1-4'}]}
+                elif scenario=='repair' and not repair and not alternate and not rewrite:
+                    result=None
+                else:
+                    result=StubBackend().describe([], {})
+                    if scenario=='selection' and not alternate:
+                        result['subject']='imaginary unicorn'
+                    if scenario=='skeptic' and rewrite:
+                        result['action']='remains visible'
+                payload=json.dumps(result) if result is not None else '{invalid JSON'
+                body={'message':{'content':payload}} if self.path=='/api/chat' else {'choices':[{'message':{'content':payload}}]}
+                b=json.dumps(body).encode();self.send_response(200)
+                self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(b)))
+                self.end_headers();self.wfile.write(b)
+        server=ThreadingHTTPServer(('127.0.0.1',0),Fake)
+        t=threading.Thread(target=server.serve_forever,daemon=True);t.start()
+        try:
+            for kind,cls in [('ollama',OllamaBackend),('compatible',LocalCompatibleBackend)]:
+                for scenario in ('repair','selection','skeptic'):
+                    server.scenario=scenario
+                    path=root/(kind+'_'+scenario);path.mkdir()
+                    np.save(path/'clip_000001.npy',arr)
+                    m=path/'manifest.jsonl';m.write_text('{"file":"clip_000001.npy"}\n')
+                    b=cls('test',f'http://127.0.0.1:{server.server_port}')
+                    result=process_manifest(m,b,quiet=True,self_check=scenario=='selection',skeptic=scenario=='skeptic')
+                    assert result['processed']==1 and result['failed']==0,(kind,scenario,result)
+                    row=json.loads(m.read_text())
+                    assert row['caption_source']=='vlm'
+                    events=[e for e in seen if e[0]==scenario and e[1]==('/api/chat' if kind=='ollama' else '/chat/completions')]
+                    if scenario=='repair':assert any(e[2] for e in events),('repair re-ask not sent',events)
+                    if scenario=='selection':
+                        assert row['vidgin_candidate_scores']['selected']=='B' and row['subject']!='imaginary unicorn'
+                        assert any(e[3] for e in events)
+                    if scenario=='skeptic':
+                        assert result['skeptic_rewrites']==1 and row['vidgin_skeptic_flags'] and row['caption_needs_review']
+                        assert sum(e[4] for e in events)==2 and sum(e[5] for e in events)==1
+            print('httprecovery PASS: JSON repair, candidate selection, skeptic rewrite via both HTTP backends')
+        finally:
+            server.shutdown();server.server_close();t.join(timeout=3)
+
 def manifest_worker(arguments):
     path,kind,model,url,opts=arguments
     backend={'stub':lambda:StubBackend(),'ollama':lambda:OllamaBackend(model,url),
@@ -1209,6 +1343,7 @@ def main():
     ap.add_argument('--snapshot-baseline',metavar='DIR')
     ap.add_argument('--registry',metavar='FILE')
     ap.add_argument('--breaker',type=int,default=5)
+    ap.add_argument('--flush-every',type=int,default=10)
     ap.add_argument('--engine-check',action='store_true')
     ap.add_argument('--self-test',action='store_true')
     ap.add_argument('--verify',metavar='DIR')
@@ -1230,7 +1365,9 @@ def main():
     args=ap.parse_args()
     if args.self_test:
         ok=self_test()
-        if ok:round5_tests()
+        if ok:
+            round5_tests()
+            round6_tests()
         return 0 if ok else 1
     if args.snapshot_baseline:
         try:snapshot_baseline(args.snapshot_baseline);return 0
@@ -1256,6 +1393,7 @@ def main():
         except Exception:ap.error('--shard must be K/N with 1 <= K <= N')
     if args.jobs<1:ap.error('--jobs must be >= 1')
     if args.breaker<0:ap.error('--breaker must be >= 0')
+    if args.flush_every<0:ap.error('--flush-every must be >= 0')
     if args.registry and args.jobs>1:ap.error('--registry requires --jobs 1 (append-only single writer)')
     signal.signal(signal.SIGINT,stop_handler)
     paths=manifests(args.root)
@@ -1264,7 +1402,7 @@ def main():
     if args.backend!='stub':validate_local(url)
     if args.engine_check:return engine_check(args.backend,args.model,url,args.frame_scale,args.image_format)
     opts=dict(force=args.force,self_check=args.self_check,shard=shard,frame_scale=args.frame_scale,
-              image_format=args.image_format,skeptic=args.skeptic,skeptic_model=args.skeptic_model,registry=args.registry,breaker=args.breaker)
+              image_format=args.image_format,skeptic=args.skeptic,skeptic_model=args.skeptic_model,registry=args.registry,breaker=args.breaker,flush_every=args.flush_every)
     tasks=[(m,args.backend,args.model,url,opts) for m in paths]
     results=[]
     if args.jobs==1:

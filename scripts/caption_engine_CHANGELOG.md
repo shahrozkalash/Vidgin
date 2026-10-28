@@ -56,3 +56,13 @@
 - Audited the shared `robust_describe()` invocation path (standard, expansion, self-check, skeptic and repair): all use the same fixed `describe()` implementation; no other backend requires the same change.
 - Added named `httpbackends` self-test: an ephemeral loopback HTTP server mimics `/api/chat` and `/chat/completions`, exercises each real backend class through `process_manifest()`, checks successful `vlm` rows, and validates compatible-backend data URI images decode to PNG bytes.
 - All previous synthetic self-tests still pass. No real-model accuracy or GPU throughput claims are implied by the HTTP mock test.
+
+
+## Round 6 — incremental persistence and HTTP recovery coverage (2026-10-28)
+
+- Added `--flush-every N` (default 10, 0 disables intermediate checkpoints). Every N successfully written rows, persist the full manifest atomically with all unvisited rows unchanged byte-for-byte; fsync and atomically update progress. Preserve the first pre-run `.bak` through every checkpoint.
+- Kept hash-resume, Gemini protection, registry append behavior, and manifest-level single-writer ownership. A resumed invocation treats its checkpointed manifest as its own pre-run backup source.
+- Added `flushkill` test: actual subprocess SIGKILL after checkpoint, JSONL integrity, byte preservation, hash-skip resume, and exact processed counts.
+- Added `httprecovery` test: both real HTTP backend classes against a request-aware local fake server for malformed JSON repair, alternate-candidate selection, and skeptic rewrite with persistent flags.
+- Preserved PNG/JPEG data-URI MIME labeling in the compatible backend (the available prior file lacked this fix, so it is carried forward explicitly).
+- No new caption-generation features, backends, or readiness thresholds.

@@ -28,7 +28,7 @@ Self-check generates a second candidate from alternate frames. Score = 3 if no g
 
 ## Limitations
 
-Observation grounding is lexical, not independent visual fact checking. Optical-flow camera/subject separation, zoom, and depth masks can fail on textureless, occluded, cut-heavy or complex clips. Phase-correlation fallback cannot reproduce dense Farneback flow. Frame upscaling cannot recover missing visual detail. JPEG needs optional OpenCV. The verification backup is the latest pre-write snapshot, not an immutable original. The progress file is written after each manifest (not after every row). Human assessment and actual T4 throughput are pending.
+Observation grounding is lexical, not independent visual fact checking. Optical-flow camera/subject separation, zoom, and depth masks can fail on textureless, occluded, cut-heavy or complex clips. Phase-correlation fallback cannot reproduce dense Farneback flow. Frame upscaling cannot recover missing visual detail. JPEG needs optional OpenCV. The verification backup is the latest pre-write snapshot, not an immutable original. The progress file is written at every incremental checkpoint and at manifest completion (not after every row by default). Human assessment and actual T4 throughput are pending.
 
 ## Round 4: skeptic, confidence, composition, human preference and workers
 
@@ -58,3 +58,16 @@ The skeptic is another model judgment, not independent ground truth. Confidence 
 ### Round 5 limitations
 
 The Gemini baseline depends on stable row indices and relative manifest paths; deliberate reordering requires an explicitly planned new baseline, not automatic replacement. Registry append and manifest write are separate durable operations, so an interrupted run can leave a valid reusable registry entry for a manifest not yet committed. Registry storage grows without compaction. Breaker counting is per manifest and `robust_describe` may perform multiple HTTP attempts per clip. The model list check is exact-name matching, and preflight does not establish actual caption quality or T4 throughput. Existing limitations on optical-flow ambiguity, depth uncertainty, shared-model skeptic blind spots, and human A/B review still apply. The readiness thresholds remain unchanged: 30 pairs, 95% caption-length compliance, 0.50 synonym caption F1, and median total time no more than 10 seconds, plus conservative provenance.
+
+
+## Round 6 — crash checkpoints and real HTTP recovery tests
+
+`--flush-every N` defaults to **10 successfully captioned or registry-reused clips**; `0` preserves end-only writes. At a checkpoint, the engine atomically writes a complete JSONL manifest consisting of all processed prefix rows and the exact original bytes for every unvisited row, then atomically updates `.caption_progress.json`. The checkpoint uses a temporary file, file fsync, and `os.replace`; the manifest's `.bak` is created **only on the first write of a given run** and retains the original pre-run manifest through later checkpoints. After a crash and a new invocation, that new invocation has its own pre-run backup. The immutable `.gemini_baseline.json` is the long-lived identity proof. A hash-matching checkpointed VLM row is skipped on resume. The maximum loss in the idealized single-writer kill scenario is `N-1` successful clips since the last checkpoint; process or filesystem failures can also affect the currently executing clip. Checkpoint and progress writes are individually atomic but are **not one atomic transaction**: if killed between them, progress may lag the manifest. The manifest is the authoritative recovery record.
+
+The append-only registry is flushed at checkpoints; it still requires `--jobs 1`. Each worker owns one manifest and its progress file. For `--jobs > 1`, checkpoints do not introduce concurrent writers to a manifest.
+
+`httprecovery` uses a request-aware ephemeral loopback server to test both native HTTP backends against three scenarios: malformed first JSON followed by a repair re-ask; an ungrounded first candidate defeated by a grounded alternate; and skeptic UNSUPPORTED verdicts causing exactly one rewrite and a persistent review flag. The server routes behavior using request content, not request sequence. This validates serialization and recovery control flow, **not** visual accuracy or GPU latency.
+
+### Updated limitations
+
+A power failure can still lose up to the current checkpoint interval of work, and atomic rename does not guarantee directory-entry durability without a directory fsync. Progress counters describe work in the current invocation, not lifetime corpus totals. SIGKILL recovery is tested with a synthetic stub and local filesystem, not a real T4 session. No real model, human A/B, or production throughput quality claim follows from these tests. `--image-format jpeg` still requires optional OpenCV, and the compatible backend now labels encoded JPEG frames `image/jpeg` and PNG frames `image/png`. The baseline and per-manifest backup serve different purposes and must not be conflated.
