@@ -38,8 +38,8 @@ def test_loader_falls_back_on_torch_without_safe_globals(tmp_path, monkeypatch):
     tr = DiTTrainer(ckpt_dir=str(tmp_path), **KW)
     path = str(tmp_path / "c.pt")
     tr.save(path)
-    monkeypatch.delattr(torch.serialization, "safe_globals")
-    monkeypatch.delattr(torch.serialization, "add_safe_globals")
+    monkeypatch.delattr(torch.serialization, "safe_globals", raising=False)
+    monkeypatch.delattr(torch.serialization, "add_safe_globals", raising=False)
     payload = load_checkpoint(path, restore_rng=True)
     assert payload["kind"] == "dit"
 
