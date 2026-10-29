@@ -37,9 +37,15 @@ def get_rng_states() -> dict:
     import numpy as np
     import torch
 
+    # The numpy state's key array is stored as a torch tensor (not an
+    # ndarray): a checkpoint then holds only tensors and plain python
+    # values, so torch.load(weights_only=True) opens it on ANY torch
+    # version without a numpy allowlist (see vidgen/checkpoint.py).
+    name, keys, pos, has_gauss, cached = np.random.get_state()
     return {
         "python": random.getstate(),
-        "numpy": np.random.get_state(),
+        "numpy": (name, torch.from_numpy(keys.astype(np.int64)), int(pos),
+                  int(has_gauss), float(cached)),
         "torch": torch.get_rng_state().cpu(),
         "torch_cuda": [s.cpu() for s in torch.cuda.get_rng_state_all()]
         if torch.cuda.is_available()
@@ -60,7 +66,10 @@ def set_rng_states(state: dict) -> None:
     import torch
 
     random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
+    name, keys, *rest = state["numpy"]
+    if isinstance(keys, torch.Tensor):  # current format (see get_rng_states)
+        keys = keys.cpu().numpy().astype(np.uint32)
+    np.random.set_state((name, keys, *rest))
     torch.set_rng_state(state["torch"].cpu())
     cuda_states = state.get("torch_cuda")
     if cuda_states is not None and torch.cuda.is_available():

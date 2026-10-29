@@ -14,12 +14,14 @@ class StructuredLogger:
         self.echo = echo
         self._fh = open(path, "a")
 
-    def log(self, record: dict) -> dict:
+    def log(self, record: dict, echo: bool | None = None) -> dict:
+        """Append ``record``; ``echo`` overrides the logger's console echo
+        for this one record (probe records print their own summary)."""
         record = dict(record)
         record.setdefault("timestamp", time.time())
         self._fh.write(json.dumps(record) + "\n")
         self._fh.flush()
-        if self.echo:
+        if self.echo if echo is None else echo:
             step = record.get("step", "?")
             msg = " ".join(
                 f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"

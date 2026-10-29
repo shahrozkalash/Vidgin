@@ -71,12 +71,17 @@ def test_generate_from_image_shape_and_first_frame(models):
     frames = generate_from_image(dit, vae, text_enc, cfg, img, "a ball",
                                  steps=2)
     assert frames.shape == (cfg.frames, cfg.height, cfg.width, 3)
-    # Frame 0 is the VAE's reconstruction of the image. The decoder's
+    # Frame 0 is the exact image (pin_first_frame) ...
+    np.testing.assert_array_equal(frames[0], img.astype(np.float32) / 127.5 - 1)
+    # ... and without pinning it is the VAE's reconstruction. The decoder's
     # normalization spans the window, so allow ~1 grey level (2/255).
+    raw = generate_from_image(dit, vae, text_enc, cfg, img, "a ball",
+                              steps=2, exact_first_frame=False)
     with torch.no_grad():
         recon = vae.decode(image_latent(vae, img, cfg) / cfg.latent_scale)
-    np.testing.assert_allclose(frames[0], recon[0, :, 0].permute(1, 2, 0).numpy(),
+    np.testing.assert_allclose(raw[0], recon[0, :, 0].permute(1, 2, 0).numpy(),
                                atol=2 / 255)
+    np.testing.assert_array_equal(frames[3:], raw[3:])  # fade: 2 frames
 
 
 def test_long_video_can_start_from_an_image(models):

@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 
-from vidgen.checkpoint import load_checkpoint
+from vidgen.checkpoint import load_checkpoint, vae_weights
 from vidgen.config import get_preset, resolve_device
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
@@ -70,7 +70,7 @@ def main() -> int:
         print(f"error: {args.vae_ckpt} is not a VAE checkpoint", file=sys.stderr)
         return 2
     vae = CausalVAE().to(device)
-    vae.load_state_dict(payload["vae"])
+    vae.load_state_dict(vae_weights(payload))
 
     if args.data_dir:
         dataset = FolderClipDataset(

@@ -46,10 +46,12 @@ from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
+from vidgen.probe import VAEProbe, format_probe
 from vidgen.seed import seed_everything
 from vidgen.train_utils import (
-    NonFiniteGuard, amp_context, build_lr_scheduler, guarded_optimizer_step,
-    make_grad_scaler, oom_guidance, validate_train_options,
+    ModelEMA, NonFiniteGuard, amp_context, build_lr_scheduler,
+    guarded_optimizer_step, load_pooled_ema, make_grad_scaler,
+    oom_guidance, validate_train_options,
 )
 from vidgen.vae.model import CausalVAE, vae_loss
 
@@ -67,6 +69,7 @@ class VAETrainer:
                  total_steps: int | None = None,
                  grad_accum: int | None = None,
                  amp: str | None = None,
+                 ema_decay: float | None = None,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -111,6 +114,17 @@ class VAETrainer:
             "grad_accum": self.grad_accum,
             "amp": self.amp,
         }
+        if ema_decay is not None:
+            # Only when enabled: a default run's train_config stays
+            # exactly the historical one.
+            self.train_config["ema_decay"] = float(ema_decay)
+        # EMA of the VAE weights (as in the DiT trainer). Everything that
+        # USES a trained VAE — DiT training, sampling, evaluation,
+        # measure_latents — prefers these weights when present
+        # (vidgen.checkpoint.vae_weights), so they all share one latent
+        # space. Built from the RAW module before the DDP wrap below.
+        self.ema = (ModelEMA({"vae": self.vae}, ema_decay)
+                    if ema_decay is not None else None)
         # Optional pool worker shard (vidgen/pool.py): this worker trains
         # only on its disjoint slice of the dataset. None = full dataset,
         # the original behavior exactly.
@@ -195,6 +209,8 @@ class VAETrainer:
         # advance on a skipped step (see train.py).
         if self.sched is not None and outcome == "stepped":
             self.sched.step()
+        if self.ema is not None and outcome == "stepped":
+            self.ema.update({"vae": unwrap_model(self.vae)})
         secs = time.perf_counter() - t0
         samples = last_batch * self.world_size * self.grad_accum
         rec = {"step": self.step, "loss": total_loss / self.grad_accum,
@@ -229,6 +245,8 @@ class VAETrainer:
             payload["sched"] = self.sched.state_dict()
         if self.scaler is not None:
             payload["scaler"] = self.scaler.state_dict()
+        if self.ema is not None:
+            payload["ema"] = self.ema.state_dict()
         return payload
 
     def load_state_dict(self, payload: dict) -> None:
@@ -246,6 +264,17 @@ class VAETrainer:
             self.sched.load_state_dict(payload["sched"])
         if "scaler" in payload and self.scaler is not None:
             self.scaler.load_state_dict(payload["scaler"])
+        if "ema" in payload:
+            if self.ema is None:
+                raise ValueError(
+                    "checkpoint carries EMA weights but this trainer was "
+                    "built without --ema-decay; resume via "
+                    "VAETrainer.resume so the EMA is restored from "
+                    "train_config (dropping it would lose the average)")
+            self.ema.load_state_dict(payload["ema"])
+        elif self.ema is not None:
+            # EMA newly enabled on resume: average from the resumed weights.
+            self.ema.reset({"vae": unwrap_model(self.vae)})
         # Sampler reconciliation: the checkpoint's sampler describes the
         # dataset IT was saved on; this trainer's fresh sampler carries
         # the CURRENT dataset size and batch size. Capture them before
@@ -284,6 +313,10 @@ class VAETrainer:
             raise ValueError(
                 f"{path} is not a VAE checkpoint (kind={payload.get('kind')!r})")
         unwrap_model(self.vae).load_state_dict(payload["vae"])  # strict load
+        if self.ema is not None:
+            # A pooled donor carries the workers' merged EMA: continue
+            # that average across rounds instead of restarting it.
+            load_pooled_ema(self.ema, payload, {"vae": unwrap_model(self.vae)})
         self.init_from = path
         if start_step is not None:
             self.step = int(start_step)
@@ -305,7 +338,7 @@ class VAETrainer:
         kwargs.pop("preset", None)  # preset always comes from the checkpoint
         stored_tc = payload.get("train_config") or {}
         for key in ("warmup_steps", "lr_schedule", "total_steps",
-                    "grad_accum", "amp"):
+                    "grad_accum", "amp", "ema_decay"):
             if kwargs.get(key) is None and key in stored_tc:
                 kwargs[key] = stored_tc[key]
         tr = cls(preset=payload["preset"], **kwargs)
@@ -385,6 +418,22 @@ def main() -> None:
                          "(default 1)")
     ap.add_argument("--amp", default=None, choices=["none", "bf16", "fp16"],
                     help="mixed precision via autocast (default none)")
+    ap.add_argument("--ema-decay", type=float, default=None,
+                    help="keep an exponential moving average of the VAE "
+                         "weights (e.g. 0.999) in every checkpoint; DiT "
+                         "training, sampling and evaluation then use it "
+                         "automatically. Default: off. On --resume the "
+                         "stored value wins.")
+    ap.add_argument("--probe-every", type=int, default=0, metavar="N",
+                    help="every N steps, measure the model on a FIXED probe "
+                         "set (vidgen/probe.py) so you can see whether "
+                         "training is still helping; logged as {\"probe\": "
+                         "...} records and printed with the change since "
+                         "the first probe. Uses the dataset's val split "
+                         "when it has one. Default 0 = off; never changes "
+                         "the training trajectory.")
+    ap.add_argument("--probe-clips", type=int, default=4,
+                    help="clips in the fixed probe set (default 4)")
     args = ap.parse_args()
 
     # Same rule as the DiT CLI: resuming without an explicit
@@ -425,6 +474,7 @@ def main() -> None:
                 warmup_steps=args.warmup_steps,
                 lr_schedule=args.lr_schedule,
                 grad_accum=args.grad_accum, amp=args.amp,
+                ema_decay=args.ema_decay,
                 dist_info=dist_info)
             if main_rank:
                 print(f"resumed from {args.resume} at step {tr.step}")
@@ -441,6 +491,7 @@ def main() -> None:
                             lr_schedule=args.lr_schedule,
                             total_steps=args.steps,
                             grad_accum=args.grad_accum, amp=args.amp,
+                            ema_decay=args.ema_decay,
                             dist_info=dist_info)
             if args.init_weights:
                 tr.load_vae_weights(args.init_weights,
@@ -454,12 +505,23 @@ def main() -> None:
                   f"device={tr.device} world_size={tr.world_size} "
                   f"global_batch={tr.global_batch_size}")
 
+        probe = None
+        if args.probe_every > 0 and main_rank:
+            probe = VAEProbe(tr, data_dir=args.data_dir,
+                             num_clips=args.probe_clips)
         for _ in range(args.steps):
             try:
                 tr.train_step()
             except torch.cuda.OutOfMemoryError:
                 print(oom_guidance("VAE training"), file=sys.stderr)
                 raise SystemExit(3)
+            if args.probe_every > 0 and tr.step % args.probe_every == 0:
+                if probe is not None:
+                    prec = probe.run(tr.step)
+                    if tr.logger:
+                        tr.logger.log(prec, echo=False)
+                    print(format_probe(prec))
+                barrier(dist_info)
             if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
                 barrier(dist_info)
                 if main_rank:

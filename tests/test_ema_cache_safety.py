@@ -130,12 +130,23 @@ def test_per_block_mod_trains_and_resumes(tmp_path):
     assert res.cfg.per_block_mod and res.dit.block_mod is not None
 
 
-def test_grow_refuses_per_block_mod(tmp_path):
-    from vidgen.grow import grow_payload
+def test_grow_transplants_per_block_mod(tmp_path):
+    from vidgen.grow import grow_payload, layer_map
 
     tr = DiTTrainer(per_block_mod=True, ckpt_dir=str(tmp_path), **KW)
-    with pytest.raises(ValueError, match="per-block-mod"):
-        grow_payload(tr.state_dict(), "small")
+    with torch.no_grad():
+        tr.dit.block_mod.normal_()
+    grown = grow_payload(tr.state_dict(), "small")
+    assert grown["config"]["per_block_mod"] is True
+    src, out = tr.dit.block_mod.detach(), grown["dit"]["block_mod"]
+    small = get_preset("small")
+    assert tuple(out.shape) == (small.dit.layers, 9, small.dit.dim)
+    d = src.shape[-1]
+    for i, j in enumerate(layer_map(src.shape[0], out.shape[0])):
+        assert torch.equal(out[i, :, :d], src[j])
+    assert out[:, :, d:].abs().sum() == 0      # new width: zero offset
+    small.per_block_mod = True
+    DiT(small).load_state_dict(grown["dit"])   # strict
 
 
 # ----------------------------------------------------------- safe loading

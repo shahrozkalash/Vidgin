@@ -102,7 +102,7 @@ pipeline (the Gemini caption tool is optional and free-tier paced).
 | tiny (64x64, 17f) | any CPU / any GPU | smoke tests + pipeline verification |
 | small (256x256, 33f) | 1 GPU with ~6 GB+ (free T4 works) | use `--grad-checkpoint --batch-size 1..2` |
 | vidgen480p (832x480, 81f) | ~24 GB+ GPU, gradient checkpointing | not yet trained |
-| vidgen9b / vidgen14b | multi-GPU cluster (FSDP) | defined and verified by shape; NOT trainable on a single free GPU |
+| vidgen9b / vidgen14b | multi-GPU cluster (`--fsdp`) | defined and verified by shape; FSDP sharding implemented and CPU-tested, never run on a real cluster; NOT trainable on a single free GPU |
 
 ### Commands
 

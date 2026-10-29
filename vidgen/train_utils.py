@@ -213,16 +213,54 @@ class ModelEMA:
                     shadow[k].copy_(v)
 
     def state_dict(self) -> dict:
+        """Plain tensors always: shadows of FSDP-sharded modules are
+        DTensors and are gathered here (a collective under FSDP — every
+        rank must call it, as the trainers' save path does)."""
+        from vidgen.distributed import is_dtensor
+
         out = {"decay": self.decay, "updates": self.updates}
-        out.update(self.shadow)
+        for name, shadow in self.shadow.items():
+            out[name] = {k: (v.full_tensor().cpu() if is_dtensor(v) else v)
+                         for k, v in shadow.items()}
         return out
 
     def load_state_dict(self, state: dict) -> None:
+        from vidgen.distributed import is_dtensor
+
         self.decay = float(state["decay"])
         self.updates = int(state["updates"])
         for name, shadow in self.shadow.items():
             for k, v in state[name].items():
+                if is_dtensor(shadow[k]):
+                    # Full tensor in, this rank's shard kept (every rank
+                    # holds the same full value, so no communication).
+                    from torch.distributed.tensor import distribute_tensor
+
+                    s = shadow[k]
+                    v = distribute_tensor(
+                        v.to(s.device_mesh.device_type), s.device_mesh,
+                        s.placements, src_data_rank=None)
                 shadow[k].copy_(v)
+
+
+def load_pooled_ema(ema: ModelEMA, payload: dict, modules: dict) -> bool:
+    """Start ``ema`` for a weights-only init from ``payload``.
+
+    A pooled checkpoint (``pool`` metadata) whose workers all kept an
+    EMA carries their merged average (vidgen.pool.merge_payloads): it is
+    loaded so the average continues across pool rounds instead of
+    restarting from zero each round. The run's own decay is kept. Any
+    other donor resets the average to ``modules``' current weights.
+    Returns True when a pooled EMA was continued.
+    """
+    pooled = payload.get("ema") if "pool" in payload else None
+    if pooled is None or set(pooled) - {"decay", "updates"} != set(ema.shadow):
+        ema.reset(modules)
+        return False
+    decay = ema.decay
+    ema.load_state_dict(pooled)
+    ema.decay = decay
+    return True
 
 
 def oom_guidance(context: str = "training") -> str:

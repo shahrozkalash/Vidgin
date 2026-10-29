@@ -271,10 +271,10 @@ torchrun --standalone --nproc_per_node=2 -m vidgen.train \
   barrier around each save. Checkpoints are written from the unwrapped
   modules, so keys never have a `module.` prefix.
 
-**Honest scope limit:** DDP is data-parallel only — every rank holds the
-full model, so DDP speeds up Small/480p training but does **not** make
-the 9B/14B presets fit on small GPUs; that needs FSDP/ZeRO model
-sharding, which is future work and is not implemented here.
+**Scope:** DDP is data-parallel only — every rank holds the full model,
+so DDP speeds up Small/480p training but does **not** make the 9B/14B
+presets fit on small GPUs. For those, the DiT trainer has `--fsdp`
+(model sharding; see "FSDP" in the 2026-10-29 section below).
 
 **Verification (this VM, 2 CPU cores, no GPU, 2026-10-21):** real
 2-process `torchrun` smokes on the Tiny preset, gloo backend, batch 1
@@ -390,7 +390,7 @@ expect it to match DDP's exact trajectory; DiLoCo's published results
 say final quality is close at these sync intervals, but Vidgin's own
 evidence so far is the proof run below, not a quality benchmark. The
 merged model must still fit on ONE worker's GPU (the pool divides
-*data and time*, not model memory — that remains FSDP territory).
+*data and time*, not model memory — that is what `--fsdp` is for).
 
 **Verification (this VM, 2 CPU cores, no GPU, 2026-10-21):** scripted
 proof round on Moving MNIST, tiny preset — one init checkpoint (step
@@ -483,8 +483,8 @@ These are documentation-only — they need hardware nobody here has:
 - **Frozen umT5-XXL (4.7B) embedding extraction** — ≥ 24 GB VRAM.
 - **Vidgen 1.3B DiT training** — 4 nodes × 8 H100, FSDP2 + Ulysses sequence
   parallel (the config dimensions exist in `get_preset("vidgen480p")`; DDP
-  data-parallel now exists (see Multi-GPU section), the FSDP2 + Ulysses
-  machinery does not).
+  data-parallel and FSDP2 sharding (`--fsdp`) now exist, Ulysses
+  sequence parallelism does not).
 - **Vidgen 14B / 500k-step run** — 8 nodes × 8 H100 (`get_preset("vidgen14b")`
   is dimension definitions only).
 - **64× H100 MFU/throughput benchmark** — 64 physical H100s.
@@ -827,22 +827,26 @@ New options (all off by default; old checkpoints load unchanged):
   DiT + text encoder (decay ramps in as `(1+n)/(10+n)`); stored as
   `ema` in each checkpoint and restored on resume. `sample.py` and
   `scripts/evaluate_checkpoint.py` use it automatically (`--no-ema` for
-  the raw weights). It never feeds back into training. Pooled
-  checkpoints are weights-only, so a pool round restarts its EMA.
+  the raw weights). It never feeds back into training. (2026-10-29:
+  the VAE trainer has it too, and pool rounds now continue the EMA.)
 - **Latent cache** — `--cache-latents` encodes each clip once (one clip
   at a time, so values do not depend on batch composition) and keeps
   the latent in CPU RAM; later epochs skip clip loading and the VAE
-  encoder entirely. RAM cost ≈ latent size × clips (tiny: ~20 KB/clip).
+  encoder entirely. RAM cost = latent size × clips: ~20 KB/clip at
+  `tiny`, but **576 KB/clip at `small`** (16 × 9 × 32 × 32 fp32) —
+  ~3.5 GB for 6,339 clips. The trainer prints the estimate at start;
+  `--cache-dtype fp16` halves it (2026-10-29).
 - **Per-block modulation** — `--per-block-mod` (config
   `per_block_mod`) adds a zero-init learned 9×D offset per block to the
   shared AdaLN modulation (PixArt-α adaLN-single), so blocks are no
-  longer forced to identical scale/shift/gates. Fresh runs only;
-  `grow` refuses such checkpoints for now.
+  longer forced to identical scale/shift/gates. Fresh runs only.
+  (2026-10-29: `grow` now transplants it.)
 
 Safe loading: `load_checkpoint` unpickles with `weights_only=True` and
 an allowlist (numpy RNG types; audio config dataclasses via
 `vidgen.audio.CHECKPOINT_CLASSES`). Anything else is refused unless
-`VIDGIN_TRUST_CHECKPOINTS=1`. Requires torch ≥ 2.6. CI runs the full
+`VIDGIN_TRUST_CHECKPOINTS=1`. (2026-10-29: no longer needs torch ≥ 2.6
+for new checkpoints — see below.) CI runs the full
 suite on CPU (`.github/workflows/tests.yml`). Tests:
 `tests/test_training_hardening.py`, `tests/test_ema_cache_safety.py`.
 
@@ -857,6 +861,8 @@ the same `x_t` the DiT sees in training, and generates the rest of the
 window to continue from it, steered by the prompt. No retraining needed;
 works with `--seconds/--segments` (segment 1 starts from the image).
 The image is center-cropped to the model's aspect ratio, never stretched.
+(2026-10-29: frame 0 is now your exact picture, not the VAE's
+reconstruction of it — see below.)
 
     python -m vidgen.sample --ckpt run/latest.pt --image photo.jpg \
         --prompt "the waves roll onto the beach" --seconds 10
@@ -878,6 +884,75 @@ makes a voice-only track without the sound model; `sample.py` writes
 
 Needs trained voice + vocoder checkpoints (`scripts/train_audio.py`) and
 ffmpeg. Tests: `tests/test_i2v_voice.py`.
+
+### Known gaps closed — 2026-10-29
+
+- **FSDP (`--fsdp`, DiT trainer).** Under torchrun, the DiT's weights,
+  gradients and Adam state are sharded across the GPUs (PyTorch FSDP2
+  `fully_shard`, one unit per transformer block), so each GPU holds
+  about 1/N of them — the route for the 9B/14B presets. The model is
+  built on the CPU and each block moves to its GPU only as it is
+  sharded. The text encoder stays replicated (gradients synced
+  explicitly, as under DDP); gradient clipping combines the sharded
+  and replicated norms (`distributed.clip_grad_norm`). Checkpoints are
+  gathered to rank 0 in the **same plain format** as DDP/single-GPU
+  ones (integer-id optimizer state too), so FSDP ⇄ DDP ⇄ single GPU
+  resume in any direction. `--amp bf16` also makes the gathered compute
+  copies bf16 (fp32 master weights and gradient reduction); `--amp fp16`
+  is refused with `--fsdp`. The VAE is small and stays on DDP.
+  *Verified on CPU only* (2 gloo processes, tiny preset): FSDP weights,
+  Adam moments and EMA match DDP to 1.2e-7 after 4 steps; FSDP resumes
+  FSDP and DDP checkpoints identically; a single process resumes an FSDP
+  checkpoint; bf16 + `--grad-checkpoint` + `--per-block-mod` run.
+  **Not yet run on real multi-GPU hardware** (NCCL/CUDA) — expect to
+  shake out issues on the first cluster run. `tests/test_fsdp.py`.
+- **In-training quality probe (`--probe-every N`, both trainers).**
+  The training loss is noisy, so it cannot say whether the last few
+  thousand steps helped. Every N steps the probe measures a FIXED set
+  (`--probe-clips`, default 4; the `val` split when the dataset has
+  one) with FIXED noise: DiT → flow loss at 5 fixed timesteps for raw
+  and EMA weights, plus `--probe-samples` short samples (fixed prompts
+  via `--probe-prompts`, fixed seeds, `--probe-steps` sampler steps)
+  scored with the pixel metrics above and saved under
+  `<ckpt-dir>/probe/step_XXXXXX/`; VAE → reconstruction MSE/PSNR, raw
+  and EMA. Logged as `{"probe": step, ...}` records and printed with
+  the change since the first probe. It saves/restores every RNG stream
+  and the train/eval mode, so training follows the identical trajectory
+  with or without it (tested). `vidgen/probe.py`.
+- **Latent-cache RAM.** Real cost printed at start (see above);
+  `--cache-dtype fp16` stores latents in half precision (half the RAM;
+  rounded once, so no longer bit-identical to an uncached run).
+- **I2V exact first frame.** `vidgen.i2v.pin_first_frame` puts the exact
+  input picture back as frame 0 and fades the VAE's detail loss out over
+  the next `--image-fade` frames (default 2), so frame 0 → 1 does not
+  snap from sharp to soft. `--no-exact-first-frame` restores the old
+  behaviour.
+- **EMA for the VAE + across pool rounds.** `train_vae --ema-decay`
+  keeps an EMA of the VAE. Every consumer of a VAE checkpoint (DiT
+  training's frozen encoder, `sample.py`, `evaluate_checkpoint.py`,
+  `measure_latents.py`) takes the EMA weights through one function
+  (`checkpoint.vae_weights`), so they always share one latent space.
+  Pooling now averages the workers' EMA shadows (plain mean, not the
+  outer step; `updates` = max) and the next round's `--init-weights`
+  continues that average instead of restarting it; if any worker kept no
+  EMA, none is merged and the round restarts it, as before.
+- **`grow` + per-block modulation.** The `[layers, 9, dim]` offsets
+  follow the block depth map; new width starts at zero (the parameter's
+  own init).
+- **Safe loading on older torch.** Checkpoints now store the numpy RNG
+  key array as a tensor, so they contain only tensors and plain values
+  and open with plain `weights_only=True` on any torch ≥ 2.4 — no
+  allowlist needed. torch ≥ 2.6 is still needed for `--fsdp`, and to
+  open checkpoints saved *before* this change safely (their numpy RNG
+  state needs the 2.6 allowlist; or set `VIDGIN_TRUST_CHECKPOINTS=1`
+  for a file you trust). Old checkpoints' RNG still restores. A CI job
+  runs the loading/training tests on torch 2.4.1.
+
+Still open: **voice.** The dialogue code is complete, but the voice and
+vocoder models have never been trained, so nothing can speak yet. That
+needs a speech dataset (`scripts/prepare_audio_data.py` downloads
+LJSpeech, ~2.6 GB, public domain) and GPU time with
+`scripts/train_audio.py` — training work, not code.
 
 ### Evaluation suite + MP4 export (Phases 6/7) — 2026-10-22
 

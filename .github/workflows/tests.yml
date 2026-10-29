@@ -23,3 +23,22 @@ jobs:
           pip install -r requirements.txt
       - name: Run test suite
         run: python -m pytest -q
+
+  # Safe loading and training on the oldest supported torch (requirements:
+  # torch >= 2.4). --fsdp needs >= 2.6, so tests/test_fsdp.py is not run.
+  old-torch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install torch 2.4 (CPU) without upgrading it
+        run: |
+          python -m pip install --upgrade pip
+          pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu
+          pip install "numpy<2" pytest scipy soundfile opencv-python-headless pillow
+      - name: Run the loading / training subset
+        run: python -m pytest -q tests/test_known_gaps.py tests/test_checkpoint.py tests/test_seed.py tests/test_ema_cache_safety.py

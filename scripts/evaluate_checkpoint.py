@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 
-from vidgen.checkpoint import inference_weights, load_checkpoint
+from vidgen.checkpoint import inference_weights, load_checkpoint, vae_weights
 from vidgen.config import VidgenConfig, get_preset, resolve_device
 from vidgen.data.clips import FolderClipDataset
 from vidgen.dit.model import DiT
@@ -70,7 +70,7 @@ def generate_clips(dit_ckpt: str, vae_ckpt: str | None, prompts, seeds,
                          "DiT checkpoint does not name one")
     vp = load_checkpoint(vae_path, map_location=str(device))
     vae = CausalVAE().to(device).eval()
-    vae.load_state_dict(vp["vae"])
+    vae.load_state_dict(vae_weights(vp))
 
     tokenizer = (tokenizer_from_dict(payload["tokenizer"])
                  if payload.get("tokenizer") is not None else None)

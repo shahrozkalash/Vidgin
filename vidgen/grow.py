@@ -19,7 +19,8 @@ performs the transplant ("growth surgery"):
   remaining new capacity is initialized the way a fresh model would be
   (PyTorch default inits; the architecture's own zero-init parts —
   AdaLN modulation, the depth stem — stay zero, exactly as in a fresh
-  model).
+  model). Per-block modulation offsets (``--per-block-mod``) follow the
+  block depth map, their new width zero.
 - DEPTH: target block i inherits source block
   ``round(i * (Ls-1) / (Lt-1))`` — the source stack is stretched
   evenly over the deeper target stack (first->first, last->last).
@@ -267,6 +268,22 @@ def _grow_tensor(key: str, src: torch.Tensor, tgt_shape: tuple,
     return _expand_generic(src, tgt_shape, key, gen)
 
 
+def _grow_block_mod(src: torch.Tensor, tgt_shape: tuple,
+                    blocks: list[int]) -> tuple[torch.Tensor, int]:
+    """Grow the per-block modulation offsets ``[layers, 9, dim]``.
+
+    Target block i takes the offsets of its mapped source block (the
+    same depth map as the blocks themselves); each of the 9 chunks
+    keeps its leading ``dim`` slots and the new width starts at ZERO —
+    the parameter's own zero init, so new dims add no offset.
+    """
+    out = torch.zeros(tgt_shape, dtype=src.dtype)
+    d = min(src.shape[-1], tgt_shape[-1])
+    for i, j in enumerate(blocks):
+        out[i, :, :d] = src[j, :, :d]
+    return out, len(blocks) * src.shape[1] * d
+
+
 # ------------------------------------------------------------- DiT growth
 def _meta_state_shapes(module_fn) -> dict:
     """State-dict shapes of a module built on the meta device (no RAM)."""
@@ -297,6 +314,11 @@ def grow_dit_state_dict(src_sd: dict, src_cfg: VidgenConfig,
             src_key = f"blocks.{blocks[int(idx)]}.{rest}"
         else:
             src_key = key
+        if key == "block_mod" and key in src_sd:
+            out, copied = _grow_block_mod(src_sd[key], shape, blocks)
+            grown[key] = out
+            copied_total += copied
+            continue
         if src_key not in src_sd:
             if key.startswith("depth_stem"):
                 # Target wants a depth stem the source never had (grow
@@ -458,11 +480,9 @@ def grow_payload(payload: dict, target: str | VidgenConfig,
     src_depth = bool(src_cfg_dict.get("use_depth", False)) \
         if src_cfg_dict else False
     tgt_cfg.use_depth = src_depth or bool(force_depth)
-    if src_cfg_dict and src_cfg_dict.get("per_block_mod", False):
-        raise ValueError(
-            "growing a DiT trained with --per-block-mod is not supported: "
-            "its per-block modulation offsets have no transplant rule yet. "
-            "Grow a shared-modulation checkpoint instead.")
+    # Per-block modulation is inherited too: its [layers, 9, dim]
+    # offsets follow the block depth map (see _grow_block_mod).
+    tgt_cfg.per_block_mod = bool(src_cfg_dict.get("per_block_mod", False))         if src_cfg_dict else False
     tgt_cfg.validate()
 
     dit_grown, dit_stats = grow_dit_state_dict(

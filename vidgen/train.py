@@ -29,14 +29,19 @@ import os
 import torch
 import torch.nn.functional as F
 
-from vidgen.checkpoint import load_checkpoint, save_checkpoint
+from vidgen.checkpoint import load_checkpoint, save_checkpoint, vae_weights
 from vidgen.config import get_preset, resolve_device
 from vidgen.depth import depth_to_latent_grid
 from vidgen.distributed import (
     DistInfo,
     barrier,
+    clip_grad_norm,
     destroy_distributed,
+    full_model_state,
+    full_optim_state,
     init_distributed,
+    load_full_model_state,
+    load_full_optim_state,
     plain_state_dict,
     rank_seed,
     resolve_rank_device,
@@ -44,6 +49,7 @@ from vidgen.distributed import (
     sync_gradients,
     unwrap_model,
     wrap_ddp,
+    wrap_fsdp,
 )
 from vidgen.data.buckets import BucketSampler
 from vidgen.data.clips import FolderClipDataset
@@ -51,16 +57,20 @@ from vidgen.data.moving_mnist import MovingMNISTDataset
 from vidgen.flow import flow_loss, rectified_flow_targets, sample_shifted_logit_normal, timestep_bins
 from vidgen.logging import StructuredLogger
 from vidgen.pool import parse_data_shard
+from vidgen.probe import DiTProbe, format_probe
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.text.tokenizer import CaptionTokenizer, load_tokenizer, tokenizer_from_dict
 from vidgen.train_utils import (
     ModelEMA, NonFiniteGuard, amp_context, build_lr_scheduler,
-    guarded_optimizer_step, make_grad_scaler, oom_guidance,
-    validate_train_options,
+    guarded_optimizer_step, load_pooled_ema, make_grad_scaler,
+    oom_guidance, validate_train_options,
 )
 from vidgen.dit.model import DiT
 from vidgen.vae.model import CausalVAE
+
+# Storage dtypes for the opt-in latent cache (--cache-dtype).
+CACHE_DTYPES = {"fp32": torch.float32, "fp16": torch.float16}
 
 
 class DiTTrainer:
@@ -82,7 +92,9 @@ class DiTTrainer:
                  amp: str | None = None,
                  ema_decay: float | None = None,
                  cache_latents: bool = False,
+                 cache_dtype: str = "fp32",
                  per_block_mod: bool = False,
+                 fsdp: bool = False,
                  dist_info: DistInfo | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
@@ -122,7 +134,9 @@ class DiTTrainer:
         if vae_ckpt:
             payload = load_checkpoint(vae_ckpt, map_location=str(self.device))
             assert payload["kind"] == "vae", f"not a VAE checkpoint: {vae_ckpt}"
-            self.vae.load_state_dict(payload["vae"])
+            # The VAE's EMA weights when it has them — the same rule
+            # sampling/evaluation use, so the latent space always matches.
+            self.vae.load_state_dict(vae_weights(payload))
         self.vae.eval()
         for p in self.vae.parameters():
             p.requires_grad_(False)
@@ -141,7 +155,18 @@ class DiTTrainer:
                 raise ValueError(f"latent_scale must be positive, got {latent_scale}")
             self.cfg.latent_scale = float(latent_scale)
         self.text_enc = build_text_encoder(self.cfg, tokenizer=tokenizer).to(self.device)
-        self.dit = DiT(self.cfg).to(self.device)
+        # --fsdp (big presets) shards the DiT across ranks (see the wrap
+        # below). Decided up front: an FSDP DiT is BUILT on the CPU and
+        # each block is moved to the GPU only as it is sharded, so a model
+        # that does not fit one GPU whole never has to.
+        self.fsdp = bool(fsdp) and dist_info.is_distributed \
+            and torch.distributed.is_initialized()
+        if fsdp and not self.fsdp and self.is_main_rank:
+            print("WARNING: --fsdp needs a torchrun launch with 2+ "
+                  "processes; training unsharded", file=sys.stderr)
+        self.dit = DiT(self.cfg)
+        if not self.fsdp:
+            self.dit = self.dit.to(self.device)
         if grad_checkpoint:
             self.dit.set_grad_checkpoint(True)
         params = list(self.dit.parameters()) + list(self.text_enc.parameters())
@@ -175,14 +200,23 @@ class DiTTrainer:
         # EMA of the trained weights (DiT + text encoder), used by
         # sampling/evaluation. Built from the RAW modules before the DDP
         # wrap below; it never feeds back into training.
+        # (Under --fsdp the shadows are built after sharding instead.)
         self.ema = (ModelEMA(self._ema_modules(), ema_decay)
-                    if ema_decay is not None else None)
+                    if ema_decay is not None and not self.fsdp else None)
         # Opt-in latent cache: the VAE is frozen and every dataset item is
         # deterministic, so each clip's latent is computed once (one clip
         # at a time, so the value never depends on batch composition) and
         # reused every epoch — skipping both the .npy load and the VAE
         # encoder. Kept on CPU; not checkpointed (it is rebuilt on demand).
+        # RAM: see latent_cache_bytes() — ~576 KB/clip at the Small preset
+        # in fp32; cache_dtype "fp16" halves it (latents are rounded to
+        # fp16 once, so a cached run is no longer bit-identical to an
+        # uncached one).
         self.cache_latents = bool(cache_latents)
+        if cache_dtype not in CACHE_DTYPES:
+            raise ValueError(f"unknown cache dtype {cache_dtype!r}; "
+                             f"choose {sorted(CACHE_DTYPES)}")
+        self.cache_dtype = cache_dtype
         self._latent_cache: dict[int, tuple[torch.Tensor, str]] = {}
 
         # Optional pool worker shard (vidgen/pool.py): this worker trains
@@ -231,7 +265,30 @@ class DiTTrainer:
         # gradients are all-reduced explicitly in train_step
         # (vidgen.distributed.sync_gradients) — the same averaged
         # gradient DDP would have produced.
-        self.dit = wrap_ddp(self.dit, dist_info, self.device)
+        # --fsdp (big presets): SHARD the DiT across the ranks instead of
+        # replicating it (vidgen.distributed.wrap_fsdp). Sharding swaps
+        # the parameters, so the optimizer and LR schedule are rebuilt on
+        # the sharded ones and the EMA shadows are created from them
+        # (all still fresh here — resume loads state into them
+        # afterwards, through the full-state helpers).
+        if self.fsdp:
+            if self.amp == "fp16":
+                raise ValueError(
+                    "--fsdp supports --amp bf16 or none, not fp16 (the "
+                    "fp16 GradScaler does not handle sharded gradients); "
+                    "the GPUs that need FSDP all run bf16")
+            self.dit = wrap_fsdp(
+                self.dit, dist_info, self.device,
+                param_dtype=torch.bfloat16 if self.amp == "bf16" else None)
+            params = list(self.dit.parameters()) + list(self.text_enc.parameters())
+            self.opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+            self.sched = build_lr_scheduler(
+                self.opt, warmup_steps=self.warmup_steps,
+                total_steps=self.total_steps, schedule=self.lr_schedule)
+            if ema_decay is not None:
+                self.ema = ModelEMA(self._ema_modules(), ema_decay)
+        else:
+            self.dit = wrap_ddp(self.dit, dist_info, self.device)
         if dist_info.is_distributed:
             # Model weights were built identically on all ranks from the
             # base seed above; NOW diverge the stochastic streams (flow
@@ -270,11 +327,18 @@ class DiTTrainer:
             if hit is None:
                 c, cap = self.dataset[i]
                 mu, _ = self.vae.encode(c.unsqueeze(0).to(self.device))
-                hit = (mu[0].cpu(), cap)
+                hit = (mu[0].to(CACHE_DTYPES[self.cache_dtype]).cpu(), cap)
                 self._latent_cache[int(i)] = hit
             mus.append(hit[0])
             captions.append(hit[1])
-        return torch.stack(mus).to(self.device), captions
+        return torch.stack(mus).to(self.device, torch.float32), captions
+
+    def latent_cache_bytes(self) -> int:
+        """RAM the latent cache will hold once every clip is cached."""
+        per = (self.cfg.latent_channels * self.cfg.latent_t
+               * self.cfg.latent_h * self.cfg.latent_w
+               * CACHE_DTYPES[self.cache_dtype].itemsize)
+        return per * len(self.dataset)
 
     def _ema_modules(self) -> dict:
         return {"dit": unwrap_model(self.dit),
@@ -338,7 +402,7 @@ class DiTTrainer:
         sync_gradients(self.text_enc, self.dist_info)
         if self.scaler is not None:
             self.scaler.unscale_(self.opt)
-        grad_norm = torch.nn.utils.clip_grad_norm_(
+        grad_norm = clip_grad_norm(
             list(self.dit.parameters()) + list(self.text_enc.parameters()), 1.0)
         # Non-finite step: the poisoned gradients are discarded WITHOUT
         # stepping, so the weights stay exactly as they were.
@@ -401,14 +465,19 @@ class DiTTrainer:
                                     self.cfg.latent_h, self.cfg.latent_w)
 
     # ------------------------------------------------------------ checkpoint
+    def _opt_modules(self) -> dict:
+        return {"dit": self.dit, "text_enc": self.text_enc}
+
     def state_dict(self) -> dict:
+        # Under --fsdp the DiT/optimizer/EMA gathers are collectives:
+        # every rank builds the payload (see save); rank 0 gets tensors.
         payload = {
             "kind": "dit",
             "preset": self.cfg.name,
             "step": self.step,
-            "dit": plain_state_dict(self.dit),
+            "dit": full_model_state(self.dit),
             "text_enc": plain_state_dict(self.text_enc),
-            "opt": self.opt.state_dict(),
+            "opt": full_optim_state(self._opt_modules(), self.opt),
             "sampler": self.sampler.state_dict(),
             "loss_history": self.loss_history,
             "config": self.cfg.to_dict(),
@@ -429,9 +498,9 @@ class DiTTrainer:
         assert payload["kind"] == "dit"
         # Loads go into the UNWRAPPED modules: checkpoint keys are plain
         # (no "module." prefix) whether or not this rank runs under DDP.
-        unwrap_model(self.dit).load_state_dict(payload["dit"])
+        load_full_model_state(self.dit, payload["dit"])
         unwrap_model(self.text_enc).load_state_dict(payload["text_enc"])
-        self.opt.load_state_dict(payload["opt"])
+        load_full_optim_state(self._opt_modules(), self.opt, payload["opt"])
         if "sched" in payload:
             if self.sched is None:
                 raise ValueError(
@@ -518,10 +587,13 @@ class DiTTrainer:
                 f"{path} was trained with a DIFFERENT caption tokenizer "
                 "vocabulary; token ids would not mean the same words")
         # Strict loads into the UNWRAPPED modules (plain keys either way).
-        unwrap_model(self.dit).load_state_dict(payload["dit"])
+        load_full_model_state(self.dit, payload["dit"])
         self.text_enc.load_state_dict(payload["text_enc"])
         if self.ema is not None:
-            self.ema.reset(self._ema_modules())  # average from the donor
+            # A pooled donor carries the workers' merged EMA: continue
+            # that average across rounds. Any other donor: average from
+            # the donor's weights.
+            load_pooled_ema(self.ema, payload, self._ema_modules())
         self.init_from = path
         if start_step is not None:
             self.step = int(start_step)
@@ -533,7 +605,14 @@ class DiTTrainer:
     def save(self, path: str) -> None:
         # Only rank 0 writes checkpoints (all ranks hold identical
         # weights thanks to DDP gradient all-reduce; the checkpoint is
-        # built from the unwrapped models, so it stays plain).
+        # built from the unwrapped models, so it stays plain). Under
+        # --fsdp EVERY rank must call save: gathering the shards into
+        # the plain payload is a collective.
+        if self.fsdp:
+            payload = self.state_dict()
+            if self.is_main_rank:
+                save_checkpoint(path, payload)
+            return
         if not self.is_main_rank:
             return
         save_checkpoint(path, self.state_dict())
@@ -715,13 +794,46 @@ def main() -> None:
                     help="encode each clip with the frozen VAE once and "
                          "reuse the latent every epoch (kept in CPU RAM): "
                          "after the first epoch, steps skip clip loading "
-                         "and the VAE encoder entirely")
+                         "and the VAE encoder entirely. RAM: ~576 KB per "
+                         "clip at the Small preset (the estimate is "
+                         "printed at start)")
+    ap.add_argument("--cache-dtype", default="fp32", choices=["fp32", "fp16"],
+                    help="storage dtype of --cache-latents: fp16 halves "
+                         "the RAM; latents are rounded once, so the run is "
+                         "no longer bit-identical to an uncached one")
     ap.add_argument("--per-block-mod", action="store_true",
                     help="give every DiT block its own zero-init offset on "
                          "the shared AdaLN modulation (PixArt-alpha "
                          "adaLN-single); a new architecture option, so "
                          "only for fresh runs. On --resume the "
                          "checkpoint's config decides.")
+    ap.add_argument("--fsdp", action="store_true",
+                    help="under torchrun: SHARD the DiT's weights, gradients "
+                         "and optimizer state across the GPUs (FSDP2) "
+                         "instead of copying the whole model to each one; "
+                         "the way to train the 9B/14B presets. Checkpoints "
+                         "stay plain (resume on any GPU count). Use with "
+                         "--amp bf16 (fp16 is not supported).")
+    ap.add_argument("--probe-every", type=int, default=0, metavar="N",
+                    help="every N steps, measure the model on a FIXED probe "
+                         "set (vidgen/probe.py) so you can see whether "
+                         "training is still helping; logged as {\"probe\": "
+                         "...} records and printed with the change since "
+                         "the first probe. Uses the dataset's val split "
+                         "when it has one. Default 0 = off; never changes "
+                         "the training trajectory.")
+    ap.add_argument("--probe-clips", type=int, default=4,
+                    help="clips in the fixed probe set (default 4)")
+    ap.add_argument("--probe-samples", type=int, default=2,
+                    help="short sample clips generated per probe, scored "
+                         "with vidgen/evaluate.py's pixel metrics and saved "
+                         "under <ckpt-dir>/probe/ (default 2; 0 = val loss "
+                         "only)")
+    ap.add_argument("--probe-steps", type=int, default=8,
+                    help="sampler steps for probe samples (default 8)")
+    ap.add_argument("--probe-prompts", default=None,
+                    help="comma-separated fixed prompts for probe samples "
+                         "(default: the probe clips' own captions)")
     args = ap.parse_args()
 
     # Resuming without an explicit --ckpt-dir continues writing next
@@ -769,6 +881,8 @@ def main() -> None:
                 grad_accum=args.grad_accum, amp=args.amp,
                 ema_decay=args.ema_decay,
                 cache_latents=args.cache_latents,
+                cache_dtype=args.cache_dtype,
+                fsdp=args.fsdp,
                 dist_info=dist_info)
             if args.grad_checkpoint:
                 unwrap_model(tr.dit).set_grad_checkpoint(True)
@@ -813,7 +927,9 @@ def main() -> None:
                             data_shard=args.data_shard,
                             ema_decay=args.ema_decay,
                             cache_latents=args.cache_latents,
+                            cache_dtype=args.cache_dtype,
                             per_block_mod=per_block_mod,
+                            fsdp=args.fsdp,
                             dist_info=dist_info)
             if args.init_weights:
                 tr.load_dit_weights(args.init_weights,
@@ -827,27 +943,55 @@ def main() -> None:
             print(f"preset={args.preset} dit_params={n_params:.1f}M "
                   f"tokens={tr.cfg.num_tokens} device={tr.device} "
                   f"world_size={tr.world_size} "
-                  f"global_batch={tr.global_batch_size}")
+                  f"global_batch={tr.global_batch_size}"
+                  + (" fsdp=sharded" if tr.fsdp else ""))
+            if tr.cache_latents:
+                print(f"latent cache: {len(tr.dataset)} clips x "
+                      f"{tr.latent_cache_bytes() // max(1, len(tr.dataset)) // 1024} KB "
+                      f"= {tr.latent_cache_bytes() / 1024**3:.2f} GB of CPU RAM "
+                      f"once every clip is cached ({tr.cache_dtype})")
 
+        probe = None
+        # Under --fsdp every rank runs the probe (the sharded forward is
+        # collective); only rank 0 saves, logs and prints.
+        if args.probe_every > 0 and (main_rank or tr.fsdp):
+            prompts = ([p.strip() for p in args.probe_prompts.split(",")
+                        if p.strip()] if args.probe_prompts else None)
+            probe = DiTProbe(
+                tr, data_dir=args.data_dir, num_clips=args.probe_clips,
+                prompts=prompts, num_samples=args.probe_samples,
+                sample_steps=args.probe_steps,
+                out_dir=(os.path.join(tr.ckpt_dir, "probe")
+                         if tr.ckpt_dir and main_rank else None))
         for _ in range(args.steps):
             try:
                 rec = tr.train_step()
             except torch.cuda.OutOfMemoryError:
                 print(oom_guidance("DiT training"), file=sys.stderr)
                 raise SystemExit(3)
+            if args.probe_every > 0 and tr.step % args.probe_every == 0:
+                # Rank 0 probes its (identical) weights; the others wait.
+                if probe is not None:
+                    prec = probe.run(tr.step)
+                    if tr.logger:
+                        tr.logger.log(prec, echo=False)
+                    if main_rank:
+                        print(format_probe(prec))
+                barrier(dist_info)
             if tr.ckpt_dir and tr.step % args.ckpt_every == 0:
                 # All ranks arrive together; only rank 0 writes (its
                 # weights are identical to every other rank's).
                 barrier(dist_info)
+                # Every rank calls save (an FSDP gather is collective);
+                # only rank 0 writes.
+                path = os.path.join(tr.ckpt_dir, f"step_{tr.step:06d}.pt")
+                tr.save(path)
                 if main_rank:
-                    path = os.path.join(tr.ckpt_dir, f"step_{tr.step:06d}.pt")
-                    tr.save(path)
                     print(f"checkpoint -> {path}")
                 barrier(dist_info)
         if tr.ckpt_dir:
             barrier(dist_info)
-            if main_rank:
-                tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
+            tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
             barrier(dist_info)
         tr.close()
         if main_rank:

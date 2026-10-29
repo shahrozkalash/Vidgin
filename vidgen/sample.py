@@ -17,12 +17,12 @@ import sys
 import numpy as np
 import torch
 
-from vidgen.checkpoint import inference_weights, load_checkpoint
+from vidgen.checkpoint import inference_weights, load_checkpoint, vae_weights
 from vidgen.config import VidgenConfig, get_preset, resolve_device
 from vidgen.depth import depth_to_latent_grid
 from vidgen.dit.model import DiT
 from vidgen.extend import generate_long, new_frames_per_segment, segments_for_seconds
-from vidgen.i2v import image_latent, load_image
+from vidgen.i2v import image_latent, load_image, pin_first_frame
 from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
@@ -108,6 +108,13 @@ def main() -> None:
                          "video that begins from it; center-cropped and "
                          "resized to the model's resolution. Works with "
                          "--seconds/--segments too.")
+    ap.add_argument("--image-fade", type=int, default=2, metavar="N",
+                    help="with --image: frame 0 is your exact picture and "
+                         "the VAE's detail loss is faded out over the next "
+                         "N frames (default 2; 0 = swap frame 0 only)")
+    ap.add_argument("--no-exact-first-frame", action="store_true",
+                    help="with --image: keep the VAE's reconstruction as "
+                         "frame 0 instead of your exact picture")
     # Voice for the generated video (vidgen/audio/dialogue.py +
     # scripts/add_audio.py): writes clip_voiced.mp4 next to clip.mp4.
     ap.add_argument("--dialogue", default=None,
@@ -161,7 +168,7 @@ def main() -> None:
     vae_path = args.vae_ckpt or payload.get("vae_ckpt")
     if vae_path:
         vp = load_checkpoint(vae_path, map_location=device)
-        vae.load_state_dict(vp["vae"])
+        vae.load_state_dict(vae_weights(vp))
     else:
         print("WARNING: no --vae-ckpt given and the checkpoint names no "
               "VAE: decoding with a RANDOMLY INITIALIZED VAE. Output is "
@@ -183,10 +190,10 @@ def main() -> None:
     text_enc.load_state_dict(text_sd)
     print(f"sampling with {'EMA' if used_ema else 'raw'} weights")
 
-    first_prefix = None
+    first_prefix = start_image = None
     if args.image:
-        first_prefix = image_latent(
-            vae, load_image(args.image, cfg.height, cfg.width), cfg, device)
+        start_image = load_image(args.image, cfg.height, cfg.width)
+        first_prefix = image_latent(vae, start_image, cfg, device)
         print(f"image-to-video: starting from {args.image}")
 
     segments = args.segments
@@ -238,6 +245,8 @@ def main() -> None:
             clip = vae.decode(z / cfg.latent_scale)  # [1,3,T,H,W] in [-1,1]
         frames = clip[0].permute(1, 2, 3, 0).cpu().numpy()  # [T,H,W,3]
         assert frames.shape == (cfg.frames, cfg.height, cfg.width, 3)
+    if start_image is not None and not args.no_exact_first_frame:
+        frames = pin_first_frame(frames, start_image, args.image_fade)
     assert frames.min() >= -1.0 - 1e-5 and frames.max() <= 1.0 + 1e-5
     frame_ms = args.frame_ms or (290 if chained else 62)
     out = save_frames(frames, args.outdir, duration_ms=frame_ms)

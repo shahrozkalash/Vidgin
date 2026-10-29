@@ -8,9 +8,11 @@
 #   pip install -r requirements.txt
 #
 # Core training dependencies
-# torch >= 2.6: safe checkpoint loading (weights_only + allowlist of
-# (object, name) pairs, vidgen/checkpoint.py); also covers torch.amp.GradScaler.
-torch>=2.6
+# torch >= 2.4 for training and safe checkpoint loading (checkpoints hold
+# only tensors and plain values; see vidgen/checkpoint.py). torch >= 2.6
+# additionally for --fsdp (FSDP2) and for opening checkpoints saved before
+# 2026-10-29 safely (their numpy RNG state needs the >= 2.6 allowlist).
+torch>=2.4
 numpy
 pytest
 scipy

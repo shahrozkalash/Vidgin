@@ -266,6 +266,39 @@ def merge_payloads(payloads: list[dict], base: dict | None = None,
             out[key] = copy.deepcopy(first[key])
     for key in WEIGHT_KEYS[kind]:
         out[key] = merged[key]
+    ema = _merge_ema([p.get("ema") for p in payloads])
+    out["pool"]["ema"] = ema is not None
+    if ema is not None:
+        out["ema"] = ema
+    return out
+
+
+def _merge_ema(emas: list) -> dict | None:
+    """Merge the workers' EMA shadows (``--ema-decay``), or None.
+
+    Each worker's EMA averages its own trajectory; their plain mean is
+    the EMA of the pooled trajectory, so it is carried into the pooled
+    checkpoint and the next round continues it (load_pooled_ema in
+    vidgen.train_utils) instead of restarting the average from zero.
+    It is never pushed through the outer step — it is an average, not a
+    trajectory point. ``updates`` takes the maximum, so the decay ramp
+    does not restart. If any worker kept no EMA (or a differently
+    shaped one), nothing is merged: half an average is not an average.
+    """
+    if not emas or any(e is None for e in emas):
+        return None
+    names = set(emas[0]) - {"decay", "updates"}
+    if any(set(e) - {"decay", "updates"} != names for e in emas[1:]):
+        return None
+    out = {"decay": float(emas[0]["decay"]),
+           "updates": max(int(e["updates"]) for e in emas)}
+    for name in sorted(names):
+        dicts = [e[name] for e in emas]
+        if any(set(d) != set(dicts[0]) or any(
+                tuple(d[k].shape) != tuple(dicts[0][k].shape) for k in d)
+               for d in dicts[1:]):
+            return None
+        out[name] = _merge_state_dicts(dicts, None, 1.0)
     return out
 
 

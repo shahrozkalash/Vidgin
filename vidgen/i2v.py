@@ -14,10 +14,12 @@ Why this works without retraining:
   distribution and the model generates the remaining frames to continue
   from it, steered by the text prompt.
 
-The decoded first frame is the VAE's reconstruction of the image (the
-encoder is strictly causal; the decoder's normalization spans the whole
-window, which moves frame 0 by ~1e-3, well under one grey level), and
-every later frame is generated.
+The decoded first frame is only the VAE's reconstruction of the image,
+which a trained VAE renders slightly soft. :func:`pin_first_frame`
+therefore puts the EXACT image back as frame 0 and fades the
+reconstruction error out over the next couple of frames (so frame 0 ->
+frame 1 does not visibly snap from sharp to soft). Every later frame is
+generated.
 """
 
 from __future__ import annotations
@@ -69,15 +71,49 @@ def image_latent(vae, image: np.ndarray, cfg: VidgenConfig,
     return mu * cfg.latent_scale
 
 
+def image_to_frame(image: np.ndarray) -> np.ndarray:
+    """uint8 [H, W, 3] -> float32 [H, W, 3] in the model's [-1, 1] range."""
+    return image.astype(np.float32) / 127.5 - 1.0
+
+
+def pin_first_frame(frames: np.ndarray, image: np.ndarray,
+                    fade_frames: int = 2) -> np.ndarray:
+    """Make frame 0 exactly ``image`` and fade the correction out.
+
+    ``frames`` is float32 ``[T, H, W, 3]`` in [-1, 1] whose frame 0 is
+    the VAE's reconstruction of ``image`` (uint8 [H, W, 3]). The residual
+    ``image - frames[0]`` (detail the VAE lost) is added fully to frame
+    0 and with linearly falling weight to the next ``fade_frames``
+    frames. ``fade_frames=0`` swaps frame 0 only. Returns a new array.
+    """
+    if frames.shape[1:] != image.shape:
+        raise ValueError(f"image {image.shape} does not match the frames "
+                         f"{frames.shape[1:]}")
+    if fade_frames < 0:
+        raise ValueError(f"fade_frames must be >= 0, got {fade_frames}")
+    out = frames.astype(np.float32).copy()
+    exact = image_to_frame(image)
+    residual = exact - out[0]
+    out[0] = exact
+    for k in range(1, min(fade_frames + 1, len(out))):
+        w = 1.0 - k / (fade_frames + 1)
+        out[k] = np.clip(out[k] + w * residual, -1.0, 1.0)
+    return out
+
+
 @torch.no_grad()
 def generate_from_image(dit, vae, text_enc, cfg: VidgenConfig,
                         image: np.ndarray, prompt: str, steps: int = 20,
                         method: str = "euler", cfg_scale: float = 7.5,
                         seed: int = 0, device: str = "cpu",
-                        depth: torch.Tensor | None = None) -> np.ndarray:
+                        depth: torch.Tensor | None = None,
+                        exact_first_frame: bool = True,
+                        fade_frames: int = 2) -> np.ndarray:
     """One native window that starts from ``image``.
 
-    Returns frames ``[T, H, W, 3]`` float32 in [-1, 1].
+    Returns frames ``[T, H, W, 3]`` float32 in [-1, 1]. With
+    ``exact_first_frame`` (default) frame 0 is the image itself, not
+    its VAE reconstruction (see :func:`pin_first_frame`).
     """
     prefix = image_latent(vae, image, cfg, device)
     text, text_mask = text_enc([prompt])
@@ -92,4 +128,6 @@ def generate_from_image(dit, vae, text_enc, cfg: VidgenConfig,
     clip = vae.decode(z / cfg.latent_scale)              # [1,3,T,H,W]
     frames = clip[0].permute(1, 2, 3, 0).cpu().numpy()
     assert np.isfinite(frames).all(), "image-to-video output contains NaN/Inf"
+    if exact_first_frame:
+        return pin_first_frame(frames, image, fade_frames)
     return frames.astype(np.float32)
