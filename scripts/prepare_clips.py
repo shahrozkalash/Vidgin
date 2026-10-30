@@ -6,11 +6,14 @@ then for each video: download -> decode -> center 17-frame temporal window ->
 center-crop to square -> resize to 64x64 -> quality/dedupe filters ->
 <uint8 (T,H,W,3) .npy> + one line in manifest.jsonl with a caption.
 
-With --depth, each kept clip also gets a 3D depth map (MiDaS estimate,
-uint8 (T,H,W), larger = nearer) saved as <clip>_depth.npy and recorded in
-the manifest as "depth" — the input Dawood's depth conditioning trains on
-(see vidgen/depth.py). The estimator downloads once at the first kept
-clip, so --depth needs internet at prep time.
+With --depth, each kept clip also gets a 3D depth map (uint8 (T,H,W),
+larger = nearer) saved as <clip>_depth.npy and recorded in the manifest as
+"depth" (+ "depth_source") — the input Dawood's depth conditioning trains on
+(see vidgen/depth.py). --depth-source picks the estimator: midas (default;
+torch.hub download, needs internet once) or depthbrain (Vidgin's own,
+vidgen/depthbrain.py, from --depthbrain-ckpt; only a checkpoint that passed
+its agreement check against MiDaS is accepted). The estimator is loaded
+before any download, so a missing or unverified checkpoint fails fast.
 
 Usage (Pixabay, "City and people" theme — recommended: free key issued instantly):
   export PIXABAY_API_KEY=...   # free key shown right after signup at https://pixabay.com/api/docs/
@@ -563,8 +566,22 @@ def main() -> None:
                     help="square clip size in pixels (multiple of 16)")
     ap.add_argument("--depth", action="store_true",
                     help="also estimate a 3D depth map per kept clip "
-                         "(MiDaS; needs internet once) and record it in "
+                         "(see --depth-source) and record it in "
                          "the manifest for depth-conditioned training")
+    ap.add_argument("--depth-source", choices=["midas", "depthbrain"],
+                    default="midas",
+                    help="depth estimator for --depth: midas (default; "
+                         "torch.hub, needs internet once) or depthbrain "
+                         "(Vidgin's own; needs a checkpoint that passed "
+                         "its agreement check)")
+    ap.add_argument("--depthbrain-ckpt", default=None,
+                    help="DepthBrain checkpoint (default: "
+                         "$VIDGIN_DEPTHBRAIN or "
+                         "checkpoints/depthbrain/depthbrain.pt)")
+    ap.add_argument("--allow-unverified-depthbrain", action="store_true",
+                    help="use a DepthBrain that has NOT passed its "
+                         "agreement check (experiments only; recorded as "
+                         "unverified in the manifest)")
     ap.add_argument("--resize", choices=["area", "lanczos", "nearest"],
                     default="area",
                     help="resize filter: area (default; INTER_AREA down / "
@@ -605,6 +622,17 @@ def main() -> None:
         sys.exit(f"error: --frames must satisfy (T-1) % 4 == 0, got {args.frames}")
     if args.size % 16 != 0:
         sys.exit(f"error: --size must be a multiple of 16, got {args.size}")
+    depth_source_id = None
+    if args.depth:
+        # Load the estimator now, not at the first kept clip: a missing or
+        # unverified DepthBrain must not surface after an hour of downloads.
+        from vidgen.depth import depth_source_id as _depth_id
+
+        try:
+            depth_source_id = _depth_id(args.depth_source, args.depthbrain_ckpt,
+                                        allow_unverified=args.allow_unverified_depthbrain)
+        except (FileNotFoundError, ValueError) as e:
+            sys.exit(f"error: {e}")
 
     if args.source == "pexels":
         env_var, api_name, signup = "PEXELS_API_KEY", "Pexels", "https://www.pexels.com/api/"
@@ -737,8 +765,12 @@ def main() -> None:
 
                     dname = name[:-4] + "_depth.npy"
                     np.save(os.path.join(args.out, dname),
-                            estimate_depth(clip))
+                            estimate_depth(
+                                clip, source=args.depth_source,
+                                ckpt=args.depthbrain_ckpt,
+                                allow_unverified=args.allow_unverified_depthbrain))
                     rec["depth"] = dname
+                    rec["depth_source"] = depth_source_id
                 mf.write(json.dumps(rec) + "\n")
                 mf.flush()
                 bytes_written += os.path.getsize(os.path.join(args.out, name))
@@ -767,6 +799,7 @@ def main() -> None:
         "seed": args.seed,
         "config": {
             "frames": args.frames, "size": args.size, "depth": args.depth,
+            "depth_source": depth_source_id,
             "resize": args.resize, "crop": args.crop,
             "thresholds": thresholds,
             "source": args.source,

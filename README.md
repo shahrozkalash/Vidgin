@@ -110,6 +110,9 @@ pipeline (the Gemini caption tool is optional and free-tier paced).
 # 1. Prepare real clips (validated downloads, quality resize, depth)
 python scripts/prepare_clips.py --source urls --urls-file urls.txt \
     --frames 33 --size 256 --depth --crop energy --out data/small-clips
+#    (--depth labels with MiDaS by default; --depth-source depthbrain uses
+#     Vidgin's own DepthBrain once scripts/train_depthbrain.py has trained
+#     one that passed its agreement check against MiDaS)
 
 # 2. Check the dataset, audit its captions, split without leakage
 python scripts/vidgin_helper.py check data/small-clips --require-depth

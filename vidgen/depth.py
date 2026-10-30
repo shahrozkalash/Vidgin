@@ -10,9 +10,17 @@ consistent, and the layout becomes controllable.
 How it is wired into Vidgin (all opt-in; nothing changes unless enabled):
 
 1. **Prep** — ``scripts/prepare_clips.py --depth`` estimates a depth map for
-   every kept clip with MiDaS (a small pretrained depth network) and saves
-   ``<clip>_depth.npy`` (uint8 ``[T, H, W]``, larger = nearer) next to the
-   clip, recording it in the manifest as ``"depth": "<file>"``.
+   every kept clip and saves ``<clip>_depth.npy`` (uint8 ``[T, H, W]``,
+   larger = nearer) next to the clip, recording it in the manifest as
+   ``"depth": "<file>"`` and the estimator as ``"depth_source"``.
+   ``--depth-source`` picks the estimator: ``midas`` (default — MiDaS, a
+   borrowed pretrained network from torch.hub) or ``depthbrain``
+   (Vidgin's own, ``vidgen/depthbrain.py``; 2026-10-29). DepthBrain is
+   used only from a checkpoint that PASSED its agreement check against
+   MiDaS on held-out clips (``vidgen.depthbrain.agreement_check``); it
+   becomes the default only once a trained one has.
+   ``scripts/label_depth.py`` (re)labels an already prepared dataset the
+   same way.
 2. **Data** — ``FolderClipDataset.get_depth(i)`` loads a clip's map as
    float ``[1, T, H, W]`` in ``[0, 1]`` (``None`` when the clip has none).
 3. **Model** — with ``VidgenConfig.use_depth`` the DiT grows a zero-init
@@ -32,7 +40,11 @@ How it is wired into Vidgin (all opt-in; nothing changes unless enabled):
 
 Honest limits: depth is *relative* (per-clip normalized), single-view, and
 estimated — a strong hint about the world's shape, not a true 3D model.
-It does not replace training or data; it spends them better.
+It does not replace training or data; it spends them better. DepthBrain
+learns from the maps MiDaS wrote for the earlier rounds (MiDaS is the
+teacher that makes the labels, the way Gemini makes captions; DepthBrain's
+weights are random-init and trained by our trainer), so it inherits
+MiDaS's mistakes.
 """
 
 from __future__ import annotations
@@ -82,7 +94,69 @@ def zeros_latent_depth(cfg, batch: int, device, dtype=torch.float32) -> torch.Te
 
 
 # ---------------------------------------------------------------- estimator
+DEPTH_SOURCES = ("midas", "depthbrain")
+DEFAULT_DEPTH_SOURCE = "midas"   # until a trained DepthBrain passes its check
+DEPTHBRAIN_ENV = "VIDGIN_DEPTHBRAIN"
+DEFAULT_DEPTHBRAIN = os.path.join("checkpoints", "depthbrain", "depthbrain.pt")
+
 _MIDAS = None  # (model, transform) lazily loaded once per process
+_BRAINS: dict = {}  # (checkpoint path, device) -> loaded DepthBrain
+
+
+def depthbrain_path(ckpt: str | None = None) -> str:
+    """Which DepthBrain checkpoint to use: ``ckpt``, else
+    ``$VIDGIN_DEPTHBRAIN``, else ``checkpoints/depthbrain/depthbrain.pt``."""
+    return ckpt or os.environ.get(DEPTHBRAIN_ENV) or DEFAULT_DEPTHBRAIN
+
+
+def load_depthbrain_cached(ckpt: str | None = None, device: str = "cpu",
+                           allow_unverified: bool = False):
+    """The DepthBrain for ``ckpt`` (see :func:`depthbrain_path`), loaded
+    once per process. A missing checkpoint is a clear error up front, and
+    so is one that has not passed its agreement check against MiDaS
+    (``allow_unverified`` overrides that, for experiments only)."""
+    path = depthbrain_path(ckpt)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"No DepthBrain checkpoint at {path!r}. Train one with "
+            "scripts/train_depthbrain.py (it learns from datasets that "
+            "already have MiDaS depth maps), then pass --depthbrain-ckpt "
+            f"or set {DEPTHBRAIN_ENV}. Or use --depth-source midas.")
+    key = (os.path.abspath(path), str(device))
+    if key not in _BRAINS:
+        from vidgen.depthbrain import load_depthbrain
+
+        _BRAINS[key] = load_depthbrain(path, device)
+    brain = _BRAINS[key]
+    from vidgen.depthbrain import verify_agreement
+
+    ok, reasons = verify_agreement(brain.agreement, brain.step)
+    if not allow_unverified and not ok:
+        raise ValueError(
+            f"{path}: this DepthBrain has not passed its agreement check "
+            f"against MiDaS on held-out clips ({'; '.join(reasons)}), so "
+            "it may not label data. Train it further with "
+            "scripts/train_depthbrain.py, or use --depth-source midas "
+            "(--allow-unverified-depthbrain overrides, experiments only).")
+    return brain
+
+
+def depth_source_id(source: str = DEFAULT_DEPTH_SOURCE,
+                    ckpt: str | None = None, device: str = "cpu",
+                    allow_unverified: bool = False) -> str:
+    """What the manifest records as ``"depth_source"`` (loads — and so
+    checks — a DepthBrain checkpoint)."""
+    if source not in DEPTH_SOURCES:
+        raise ValueError(
+            f"unknown depth source {source!r}; choose {DEPTH_SOURCES}")
+    if source == "midas":
+        return "midas_small"
+    path = depthbrain_path(ckpt)
+    brain = load_depthbrain_cached(path, device, allow_unverified)
+    from vidgen.depthbrain import verify_agreement
+
+    tag = "" if verify_agreement(brain.agreement, brain.step)[0] else ",unverified"
+    return f"depthbrain:{os.path.basename(path)}@step{brain.step}{tag}"
 
 
 def _trust_hub_repo(owner_repo: str) -> None:
@@ -144,16 +218,36 @@ def _load_midas(device: str):
 
 
 @torch.no_grad()
-def estimate_depth(clip: np.ndarray, device: str = "cpu") -> np.ndarray:
+def estimate_depth(clip: np.ndarray, device: str = "cpu",
+                   source: str = DEFAULT_DEPTH_SOURCE,
+                   ckpt: str | None = None,
+                   allow_unverified: bool = False) -> np.ndarray:
     """Estimate a depth map for one clip.
 
     clip: uint8 ``[T, H, W, 3]`` -> uint8 ``[T, H, W]`` depth, per-clip
     min-max normalized (larger = nearer the camera). Relative depth only:
-    MiDaS does not know real-world meters, and neither do we.
+    neither estimator knows real-world meters.
+
+    ``source``: ``"midas"`` (default — torch.hub download, needs internet
+    once) or ``"depthbrain"`` (Vidgin's own, from ``ckpt``; see
+    :func:`depthbrain_path` — must have passed its agreement check unless
+    ``allow_unverified``).
     """
     if clip.dtype != np.uint8 or clip.ndim != 4 or clip.shape[3] != 3:
         raise ValueError(
             f"clip must be uint8 [T,H,W,3], got {clip.dtype} {clip.shape}")
+    if source not in DEPTH_SOURCES:
+        raise ValueError(
+            f"unknown depth source {source!r}; choose {DEPTH_SOURCES}")
+    if source == "depthbrain":
+        from vidgen.depthbrain import estimate_depth_brain
+
+        return estimate_depth_brain(
+            load_depthbrain_cached(ckpt, device, allow_unverified), clip)
+    return _estimate_midas(clip, device)
+
+
+def _estimate_midas(clip: np.ndarray, device: str) -> np.ndarray:
     model, transform = _load_midas(device)
     t, h, w, _ = clip.shape
     frames = []

@@ -549,8 +549,11 @@ as depth-map conditioning, end to end (`vidgen/depth.py` documents the
 design and its honest limits):
 
 - **Prep** — `scripts/prepare_clips.py --depth` estimates a depth map per
-  kept clip (MiDaS-small, per-clip normalized, larger = nearer), saves
-  `<clip>_depth.npy`, and records `"depth"` in the manifest.
+  kept clip (per-clip normalized, larger = nearer), saves
+  `<clip>_depth.npy`, and records `"depth"` (+ `"depth_source"`) in the
+  manifest. The estimator is MiDaS-small by default; `--depth-source
+  depthbrain` uses Vidgin's own DepthBrain instead, once one has passed
+  its agreement check (see below).
 - **Data** — `FolderClipDataset.get_depth(i)` returns float `[1,T,H,W]`
   in `[0,1]` or `None`; the `(tensor, caption)` sample contract is
   unchanged.
@@ -596,7 +599,7 @@ with rich, dense 15–30 word descriptions written by Gemini vision or a local
 vision captioning model.
 
 ### Prep-only Boundary & Contract Hard Rules
-- **Data-Prep Only**: This captioner is strictly a offline data-prep labeling tool (same status as MiDaS depth labels). It is **NOT** part of the Vidgin diffusion model and is **never** imported by `vidgen/` model code.
+- **Data-Prep Only**: This captioner is strictly a offline data-prep labeling tool (same status as the DepthBrain depth labels). It is **NOT** part of the Vidgin diffusion model and is **never** imported by `vidgen/` model code.
 - **Fixed Output Contract**: One caption per clip, written into the chunk's `manifest.jsonl`. Moves the previous caption to `"caption_weak"`, sets `"caption"`, preserves every other key untouched (crucially `"depth"` maps), and tags `"caption_source"` with the backend that produced it (`"gemini"` or `"local"`).
 - **Caption Spec**: ONE present-tense sentence of 15 to 30 words, describing the main subject and action, plus camera movement (static, pan, tilt, tracking) and lighting/time, generated from 3 frames sampled across the clip (first, middle, last).
 - **100% Free**: $0 budget, zero paid APIs or services.
@@ -884,6 +887,63 @@ makes a voice-only track without the sound model; `sample.py` writes
 
 Needs trained voice + vocoder checkpoints (`scripts/train_audio.py`) and
 ffmpeg. Tests: `tests/test_i2v_voice.py`.
+
+### DepthBrain — Vidgin's own depth estimator (2026-10-29)
+
+Prep labels depth with MiDaS, a borrowed pretrained model. DepthBrain
+(`vidgen/depthbrain.py`) is the replacement: a U-Net of **~9.3M
+parameters** at the default `--base 64` (spec: 5–20M; `--base 48` ≈
+5.3M), random-init and trained by our own trainer, that turns each RGB
+frame (any size) into relative depth, larger = nearer — the same uint8
+`[T,H,W]` per-clip-normalized contract as the MiDaS maps, so nothing
+downstream changes. It loads from a plain Vidgin checkpoint: no
+torch.hub, no internet, no third-party weights at prep time.
+
+- **Teacher:** it learns from the depth maps MiDaS wrote for Rounds 1–4 —
+  MiDaS makes the labels the way Gemini makes our captions; the network
+  and its weights are ours. (Self-supervised depth from video motion, no
+  teacher at all, is a possible v2.)
+- **Train:** `scripts/train_depthbrain.py --data <round dirs...>`. Loss:
+  MiDaS's own scale-and-shift-invariant L1 (sign kept, so an upside-down
+  map is wrong) over a whole clip window at once (one scale across
+  time), plus multi-scale edge matching and a temporal term against
+  flicker. AdamW + cosine LR, EMA (prep uses it), `--amp fp16` for the
+  6 GB card, bit-identical `--resume`.
+- **Agreement check (the gate):** a fixed 5% of clips (`--val-pct`,
+  chosen by a hash of each clip's source video, else folder+file; one
+  video is never on both sides, and `--val-pct` cannot change on resume)
+  never enters training. Every
+  `--eval-every` steps it reports `mae` (after best scale+shift),
+  `order` (share of near/far pixel pairs in MiDaS's order; 0.5 = chance)
+  and `flicker`. At the end, ALL held-out clips are measured and
+  `agreement_check` must pass: ≥ 50 held-out clips, order ≥ 0.85,
+  mae ≤ 0.08, flicker ≤ 0.03 (`AGREEMENT_GATE`; provisional, set before
+  any real run). The result is stored inside `depthbrain.pt` and in
+  `depthbrain_report.json`, tied to the step it measured: any further
+  training step clears it. Prep does not trust the stored "passed" flag —
+  it re-scores the stored numbers against today's `AGREEMENT_GATE` and
+  checks the step matches the weights.
+- **Prep stays on MiDaS.** `prepare_clips.py --depth` and
+  `label_depth.py` default to `--depth-source midas`. With `--depth-source
+  depthbrain` they load the checkpoint (`--depthbrain-ckpt`, else
+  `$VIDGIN_DEPTHBRAIN`, else `checkpoints/depthbrain/depthbrain.pt`)
+  before any download, and **refuse** it if it is missing or has not
+  passed the check (`--allow-unverified-depthbrain` overrides, for
+  experiments only, and the maps are then tagged `,unverified`). Every
+  map records `"depth_source"` (`midas_small` or e.g.
+  `depthbrain:depthbrain.pt@step20000`). DepthBrain becomes the default
+  only after a trained one passes — a one-line change to
+  `DEFAULT_DEPTH_SOURCE` in `vidgen/depth.py`, made then, not now.
+- **`scripts/label_depth.py --data DIR`** (re)labels an existing dataset
+  (skips clips that have a map unless `--overwrite`; manifest rewritten
+  atomically, so an interrupted run continues).
+- **Honest limits:** DepthBrain is at best as right as MiDaS, and the
+  check measures agreement with MiDaS, not true depth. Training on
+  DepthBrain's own maps is warned against. Tested on synthetic clips
+  only (`tests/test_depthbrain.py`: a tiny 0.1M version learns depth
+  from pixels — held-out order 0.67 → 0.999, mae 0.006, and passes the
+  check's thresholds on 7 clips); **no DepthBrain has been trained on the
+  real rounds yet**, and the 9.3M default has not been run on a GPU.
 
 ### Known gaps closed — 2026-10-29
 
