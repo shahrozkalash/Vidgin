@@ -914,11 +914,14 @@ torch.hub, no internet, no third-party weights at prep time.
   video is never on both sides, and `--val-pct` cannot change on resume)
   never enters training. Every
   `--eval-every` steps it reports `mae` (after best scale+shift),
-  `order` (share of near/far pixel pairs in MiDaS's order; 0.5 = chance)
-  and `flicker`. At the end, ALL held-out clips are measured and
-  `agreement_check` must pass: ≥ 50 held-out clips, order ≥ 0.85,
-  mae ≤ 0.08, flicker ≤ 0.03 (`AGREEMENT_GATE`; provisional, set before
-  any real run). The result is stored inside `depthbrain.pt` and in
+  `order` (share of near/far pixel pairs in MiDaS's order; 0.5 = chance),
+  `flicker` and `pearson` (per-clip Pearson correlation with MiDaS's map,
+  averaged over clips). At the end, ALL held-out clips are measured and
+  `agreement_check` must pass ALL of: ≥ 50 held-out clips, order ≥ 0.85,
+  mae ≤ 0.08, flicker ≤ 0.03, mean Pearson ≥ 0.90 (`AGREEMENT_GATE`;
+  provisional, set before any real run; Pearson added 2026-10-30 from the
+  original spec — a check recorded without it no longer passes). The
+  report keeps each held-out clip's Pearson (`pearson_per_clip`). The result is stored inside `depthbrain.pt` and in
   `depthbrain_report.json`, tied to the step it measured: any further
   training step clears it. Prep does not trust the stored "passed" flag —
   it re-scores the stored numbers against today's `AGREEMENT_GATE` and
@@ -944,6 +947,36 @@ torch.hub, no internet, no third-party weights at prep time.
   from pixels — held-out order 0.67 → 0.999, mae 0.006, and passes the
   check's thresholds on 7 clips); **no DepthBrain has been trained on the
   real rounds yet**, and the 9.3M default has not been run on a GPU.
+- **Cloud training notebook:** `notebooks/train_depthbrain.ipynb` runs
+  the whole job in one Colab session using only repo commands: stage the
+  Round 1–4 data from Drive to local disk (`scripts/stage_depth_data.py`:
+  manifest + clips + `*_depth.npy`, nothing else), `train_depthbrain.py
+  --dry-run` (clips == depth maps == manifest lines, ≥ 50 held out; no
+  training), a first session that stops early (`--session-steps`) with
+  checkpoints to Drive every 500 steps, `--resume auto` (continues
+  `<ckpt-dir>/latest.pt`) to the end, and `--summary` (steps, final loss,
+  every gate metric incl. Pearson, PASS/FAIL). A PASS changes no default.
+  `tests/test_depthbrain_notebook.py` runs the same command sequence on
+  CPU and checks the split run ends bit-identical to an unbroken one.
+
+### Caption engine vs Gemini — the eval pack (2026-10-30)
+
+`scripts/build_caption_eval_pack.py` assembles the head-to-head; it does
+not caption anything and leaves `scripts/caption_engine.py` untouched.
+`build SOURCE OUT` takes 120 Gemini rows from a chunk (Stage 2 chunk3)
+into a new folder: `reference/` holds the rows byte-for-byte plus the
+engine's own immutable `.gemini_baseline.json` snapshot; `engine/` holds
+the same 120 clips (+ depth maps) with every caption field removed. If the
+source has a Gemini baseline, each row must still match it or the build
+stops. After the owner's engine run on `OUT/engine`, `ab OUT` draws 30
+blind pairs with the engine's `make_ab_pack` (seeded): the judge gets
+`OUT/judge/` only (pack + one frame strip per pair), the key goes to
+`OUT/sealed/`. `score OUT RATED` opens the key with the engine's
+`score_ab` and writes `ab_result.json` for `caption_engine.py --eval-suite
+OUT/engine OUT/reference --ab-result`. Same source + seed → same pack,
+byte for byte. Tested on a synthetic 120-clip chunk with the engine's stub
+backend (`tests/test_caption_eval_pack.py`); the real pack and verdict are
+the owner's run.
 
 ### Known gaps closed — 2026-10-29
 

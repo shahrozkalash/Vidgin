@@ -179,13 +179,19 @@ def depth_metrics(pred: torch.Tensor, target: torch.Tensor,
       by > 0.05) that DepthBrain puts in the same near/far order — the
       relative-depth score; 0.5 is chance;
     - ``flicker``: mean frame-to-frame change of the aligned error (0 =
-      no flicker beyond what the teacher has).
+      no flicker beyond what the teacher has);
+    - ``pearson``: mean over clips of the Pearson correlation between
+      DepthBrain's and the teacher's maps (all pixels of a clip; 1 = same
+      shape up to scale+shift, an upside-down map scores negative), with
+      ``pearson_per_clip`` aligned to the input clips (``None`` for a
+      flat teacher map, which is skipped like in the other metrics).
     """
     keep = target.reshape(target.shape[0], -1).std(dim=1) > 1e-4
     p, t = pred[keep].double(), target[keep].double()
     if p.shape[0] == 0:
         return {"mae": float("nan"), "order": float("nan"),
-                "flicker": float("nan"), "clips": 0}
+                "flicker": float("nan"), "pearson": float("nan"),
+                "pearson_per_clip": [None] * int(target.shape[0]), "clips": 0}
     b = p.shape[0]
     pf, tf = p.reshape(b, -1), t.reshape(b, -1)
     pc = pf - pf.mean(1, keepdim=True)
@@ -193,6 +199,11 @@ def depth_metrics(pred: torch.Tensor, target: torch.Tensor,
     scale = ((pc * tc).sum(1, keepdim=True)
              / (pc.pow(2).sum(1, keepdim=True) + 1e-12)).clamp(min=0.0)
     aligned = pc * scale + tf.mean(1, keepdim=True)
+    r = ((pc * tc).sum(1) / (pc.pow(2).sum(1).sqrt() * tc.pow(2).sum(1).sqrt()
+                             + 1e-12))
+    per_clip, kept = [], iter(r.tolist())
+    for k in keep.tolist():
+        per_clip.append(next(kept) if k else None)
     err = (aligned - tf).reshape(p.shape)
     g = torch.Generator().manual_seed(seed)
     n = pf.shape[1]
@@ -206,7 +217,8 @@ def depth_metrics(pred: torch.Tensor, target: torch.Tensor,
     flicker = float((err[:, 1:] - err[:, :-1]).abs().mean()) \
         if p.shape[1] > 1 else 0.0
     return {"mae": float(err.abs().mean()), "order": order,
-            "flicker": flicker, "clips": int(b)}
+            "flicker": flicker, "pearson": float(r.mean()),
+            "pearson_per_clip": per_clip, "clips": int(b)}
 
 
 # ------------------------------------------------------------- checkpoints
@@ -244,6 +256,7 @@ AGREEMENT_GATE = {
     "min_order": 0.85,     # near/far pairs in MiDaS's order (0.5 = chance)
     "max_mae": 0.08,       # [0,1] units after best per-clip scale+shift
     "max_flicker": 0.03,   # frame-to-frame wobble of the aligned error
+    "min_pearson": 0.90,   # mean per-clip Pearson correlation with MiDaS
 }
 
 
@@ -252,14 +265,16 @@ def agreement_check(ev: dict, gate: dict | None = None,
     """Pass/fail of a DepthBrain against its MiDaS teacher.
 
     ``ev`` is ``DepthBrainTrainer.evaluate`` output (``val_mae``,
-    ``val_order``, ``val_flicker``, ``val_clips``). Returns ``{"passed",
-    "reasons", "gate", "measured", "step"}``; every failed threshold is
-    listed. ``step`` names the weights that were measured.
+    ``val_order``, ``val_flicker``, ``val_pearson``, ``val_clips``).
+    Returns ``{"passed", "reasons", "gate", "measured", "step"}``; every
+    failed threshold is listed (ALL must hold; a missing measurement
+    fails). ``step`` names the weights that were measured.
     """
     gate = dict(AGREEMENT_GATE if gate is None else gate)
     n = int(ev.get("val_clips") or 0)
     measured = {k: ev.get(k) for k in
-                ("val_clips", "val_order", "val_mae", "val_flicker")}
+                ("val_clips", "val_order", "val_mae", "val_flicker",
+                 "val_pearson")}
     reasons = []
     if n < gate["min_val_clips"]:
         reasons.append(f"only {n} held-out clips "
@@ -272,6 +287,12 @@ def agreement_check(ev: dict, gate: dict | None = None,
         if not ev["val_flicker"] <= gate["max_flicker"]:
             reasons.append(f"flicker {ev['val_flicker']:.4f} > "
                            f"{gate['max_flicker']}")
+        if ev.get("val_pearson") is None:
+            reasons.append("no Pearson correlation recorded (checkpoint "
+                           "checked before Pearson joined the gate)")
+        elif not ev["val_pearson"] >= gate["min_pearson"]:
+            reasons.append(f"pearson {ev['val_pearson']:.3f} < "
+                           f"{gate['min_pearson']}")
     return {"passed": not reasons, "reasons": reasons, "gate": gate,
             "measured": measured, "step": step}
 

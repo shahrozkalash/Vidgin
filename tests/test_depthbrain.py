@@ -113,9 +113,12 @@ def test_metrics_perfect_inverted_and_chance():
     tgt = torch.rand(3, 4, 16, 16)
     good = depth_metrics(tgt * 2 + 1, tgt)
     assert good["mae"] < 1e-6 and good["order"] == 1.0 and good["flicker"] < 1e-6
+    assert good["pearson"] == pytest.approx(1.0)
+    assert good["pearson_per_clip"] == pytest.approx([1.0] * 3)
     flipped = depth_metrics(-tgt, tgt)
     assert flipped["order"] == 0.0
     assert flipped["mae"] > 0.2               # cannot be "fixed" by a negative scale
+    assert flipped["pearson"] == pytest.approx(-1.0)
     assert 0.4 < depth_metrics(torch.rand_like(tgt), tgt)["order"] < 0.6
 
 
@@ -130,17 +133,95 @@ def test_default_size_is_within_spec():
 
 def test_agreement_check_pass_and_every_failure_reason():
     good = {"val_clips": 60, "val_order": 0.93, "val_mae": 0.04,
-            "val_flicker": 0.01}
+            "val_flicker": 0.01, "val_pearson": 0.95}
     assert agreement_check(good, step=7) == {
         "passed": True, "reasons": [], "gate": AGREEMENT_GATE,
         "measured": good, "step": 7}
     bad = agreement_check({"val_clips": 10, "val_order": 0.7, "val_mae": 0.2,
-                           "val_flicker": 0.05})
-    assert not bad["passed"] and len(bad["reasons"]) == 4
+                           "val_flicker": 0.05, "val_pearson": 0.5})
+    assert not bad["passed"] and len(bad["reasons"]) == 5
     nothing = agreement_check({"val_clips": 0})
     assert not nothing["passed"] and "only 0 held-out" in nothing["reasons"][0]
     nan = agreement_check(dict(good, val_order=float("nan")))
     assert not nan["passed"]                   # NaN never passes
+    assert not agreement_check(dict(good, val_pearson=float("nan")))["passed"]
+
+
+def test_gate_keeps_every_v1_threshold_and_adds_pearson():
+    assert AGREEMENT_GATE == {"min_val_clips": 50, "min_order": 0.85,
+                              "max_mae": 0.08, "max_flicker": 0.03,
+                              "min_pearson": 0.90}
+
+
+def test_high_order_and_mae_but_low_pearson_is_refused():
+    """Every v1 metric comfortably passes; Pearson alone fails the gate."""
+    ev = {"val_clips": 120, "val_order": 0.97, "val_mae": 0.01,
+          "val_flicker": 0.005, "val_pearson": 0.80}
+    check = agreement_check(ev)
+    assert not check["passed"]
+    assert check["reasons"] == ["pearson 0.800 < 0.9"]
+    assert agreement_check(dict(ev, val_pearson=0.90))["passed"]   # >= holds
+
+
+def _ckpt_with_check(tmp_path, name, measured):
+    """A real (tiny) DepthBrain checkpoint carrying a given agreement
+    record for its own step."""
+    data = _dataset(tmp_path / f"teach_{name}", n=4)
+    tr = DepthBrainTrainer([data], ckpt_dir=str(tmp_path / "ck"), val_pct=0.0,
+                           device="cpu", **SMALL)
+    tr.train_step()
+    tr.agreement = (agreement_check(measured, step=tr.step)
+                    if "val_pearson" in measured else
+                    {"passed": True, "reasons": [], "measured": measured,
+                     "gate": {k: v for k, v in AGREEMENT_GATE.items()
+                              if k != "min_pearson"}, "step": tr.step})
+    path = str(tmp_path / "ck" / f"{name}.pt")
+    tr.save(path)
+    return path
+
+
+@pytest.mark.parametrize("case", ["low_pearson", "no_pearson_v1_check"])
+def test_prep_refuses_a_checkpoint_that_fails_only_on_pearson(
+        tmp_path, monkeypatch, case):
+    """(a) high order / low MAE but Pearson < 0.90 and (c) a v1 checkpoint
+    whose check passed before Pearson existed: both refused by label_depth,
+    estimate_depth and prep (before any download)."""
+    import prepare_clips
+
+    v1 = {"val_clips": 120, "val_order": 0.97, "val_mae": 0.01,
+          "val_flicker": 0.005}
+    measured = dict(v1, val_pearson=0.80) if case == "low_pearson" else v1
+    ckpt = _ckpt_with_check(tmp_path, case, measured)
+    want = ("pearson 0.800 < 0.9" if case == "low_pearson"
+            else "no Pearson correlation recorded")
+    depth_mod._BRAINS.clear()
+    rgb, _ = _scene(np.random.default_rng(1))
+    with pytest.raises(ValueError, match=want):
+        estimate_depth(rgb, source="depthbrain", ckpt=ckpt)
+    data = _dataset(tmp_path / "new", n=2, with_depth=False, seed=3)
+    with pytest.raises(ValueError, match=want):
+        label_dataset(data, source="depthbrain", ckpt=ckpt)
+
+    def no_network(*a, **k):
+        raise AssertionError("prep reached the download stage")
+
+    monkeypatch.setattr(prepare_clips, "download", no_network)
+    urls = tmp_path / "urls.txt"
+    urls.write_text("https://example.invalid/a.mp4\n")
+    monkeypatch.setattr(sys, "argv", [
+        "prepare_clips.py", "--source", "urls", "--urls-file", str(urls),
+        "--out", str(tmp_path / "out"), "--depth",
+        "--depth-source", "depthbrain", "--depthbrain-ckpt", ckpt])
+    with pytest.raises(SystemExit) as e:
+        prepare_clips.main()
+    assert "not passed its agreement check" in str(e.value.code)
+    assert want in str(e.value.code)
+
+    # The same weights with a Pearson >= 0.90 are accepted: Pearson was the
+    # only reason for the refusals above.
+    ok = _ckpt_with_check(tmp_path, "ok", dict(v1, val_pearson=0.95))
+    depth_mod._BRAINS.clear()
+    assert estimate_depth(rgb, source="depthbrain", ckpt=ok).shape == (9, 32, 32)
 
 
 def test_depthbrain_learns_depth_from_pixels_and_passes_its_check(
@@ -159,12 +240,20 @@ def test_depthbrain_learns_depth_from_pixels_and_passes_its_check(
     check = tr.final_check(FEW_CLIPS_GATE)
     assert check["passed"], check["reasons"]
     assert check["step"] == 120
+    assert check["measured"]["val_pearson"] >= 0.9
 
     path = str(tmp_path / "ck" / "depthbrain.pt")
     tr.save(path)
     report = json.load(open(tr.write_report()))
     assert report["teachers"] == {"midas_small": 40}
     assert report["agreement"]["passed"] is True
+    # (b) the report holds Pearson per held-out clip and as the mean.
+    per = report["agreement"]["pearson_per_clip"]
+    val_names = {f"d/{it[1]}" for it in tr.val_items}
+    assert set(per) == val_names and len(per) == 7
+    assert report["agreement"]["measured"]["val_pearson"] == pytest.approx(
+        np.mean(list(per.values())))
+    assert report["agreement"]["gate"]["min_pearson"] == 0.90
 
     # Prep re-scores the stored numbers against the OFFICIAL gate, so a pass
     # under a looser gate (7 held-out clips < 50) does not count ...
@@ -192,7 +281,7 @@ def test_depthbrain_learns_depth_from_pixels_and_passes_its_check(
 def test_a_check_only_counts_for_the_weights_it_measured(tmp_path, monkeypatch):
     monkeypatch.setattr(brain_mod, "AGREEMENT_GATE",
                         dict(FEW_CLIPS_GATE, min_val_clips=1, min_order=0.0,
-                             max_mae=1.0, max_flicker=1.0))
+                             max_mae=1.0, max_flicker=1.0, min_pearson=-1.0))
     data = _dataset(tmp_path / "d", n=12)
     tr = DepthBrainTrainer([data], ckpt_dir=str(tmp_path / "ck"),
                            val_pct=30.0, device="cpu", **SMALL)

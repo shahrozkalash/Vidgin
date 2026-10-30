@@ -12,7 +12,8 @@ source video — or folder+file when the manifest has no ``source_url`` — so
 it never moves between runs and one video never lands on both sides) is
 held out and DepthBrain's
 agreement with the teacher is measured on it every ``--eval-every`` steps
-(``mae``, ``order``, ``flicker``; see ``vidgen.depthbrain.depth_metrics``).
+(``mae``, ``order``, ``flicker``, ``pearson``; see
+``vidgen.depthbrain.depth_metrics``).
 At the end, ALL held-out clips are measured and the agreement check
 (``vidgen.depthbrain.agreement_check``) is run and recorded inside
 ``depthbrain.pt`` and in ``<ckpt-dir>/depthbrain_report.json``. Prep and
@@ -25,6 +26,15 @@ Usage:
   # resume (bit-identical continuation):
   python scripts/train_depthbrain.py --resume checkpoints/depthbrain/latest.pt \\
       --data /data/round1 /data/round2 --steps 40000
+  # one command for a fresh start AND every later session (cloud runs):
+  # --resume auto continues <ckpt-dir>/latest.pt when it exists;
+  # --session-steps stops this session early (checkpoint saved)
+  python scripts/train_depthbrain.py --resume auto --ckpt-dir <drive>/depthbrain \\
+      --data /data/round1 --steps 20000 --save-every 500 --session-steps 3000
+  # check the data before a long run (no training): counts must match
+  python scripts/train_depthbrain.py --data /data/round1 --dry-run
+  # one-page summary of a finished run
+  python scripts/train_depthbrain.py --summary checkpoints/depthbrain/depthbrain_report.json
   # once its report says "passed": true, label new data with it:
   python scripts/prepare_clips.py ... --depth --depth-source depthbrain \\
       --depthbrain-ckpt checkpoints/depthbrain/depthbrain.pt
@@ -48,9 +58,9 @@ import torch.nn.functional as F
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
 from vidgen.config import resolve_device
 from vidgen.data.clips import _load_manifest
-from vidgen.depthbrain import (CHECKPOINT_KIND, DepthBrain, DepthBrainConfig,
-                               agreement_check, count_params, depth_loss,
-                               depth_metrics)
+from vidgen.depthbrain import (AGREEMENT_GATE, CHECKPOINT_KIND, DepthBrain,
+                               DepthBrainConfig, agreement_check, count_params,
+                               depth_loss, depth_metrics)
 from vidgen.logging import StructuredLogger
 from vidgen.seed import seed_everything
 from vidgen.train_utils import (ModelEMA, NonFiniteGuard, amp_context,
@@ -93,6 +103,94 @@ def collect_items(data_dirs: list[str], val_pct: float):
             item = (d, rec["file"], name)
             (val if is_val(split_key(d, rec), val_pct) else train).append(item)
     return train, val, teachers
+
+
+def audit_data(data_dirs: list[str], val_pct: float,
+               min_val_clips: int | None = None) -> dict:
+    """What the trainer would read, without training (``--dry-run``).
+
+    Per dataset folder: manifest lines, clips present on disk, depth maps
+    present on disk, and the train / held-out split. ``ok`` is False when
+    clips, depth maps and manifest lines differ (a half-staged copy, a
+    missing map) or when fewer clips are held out than the agreement
+    check needs (``min_val_clips``, default the gate's)."""
+    need = AGREEMENT_GATE["min_val_clips"] if min_val_clips is None \
+        else min_val_clips
+    rows, problems = [], []
+    train, val, teachers = collect_items(data_dirs, val_pct)
+    for d in data_dirs:
+        recs = _load_manifest(d)
+        clips = sum(os.path.isfile(os.path.join(d, r["file"])) for r in recs)
+        maps = sum(bool(r.get("depth")) and
+                   os.path.isfile(os.path.join(d, r["depth"])) for r in recs)
+        row = {"data": d, "manifest_lines": len(recs), "clips": clips,
+               "depth_maps": maps,
+               "train": sum(i[0] == d for i in train),
+               "val": sum(i[0] == d for i in val)}
+        if not len(recs) == clips == maps:
+            problems.append(f"{d}: manifest lines {len(recs)}, clips {clips}, "
+                            f"depth maps {maps} — must all be equal")
+        rows.append(row)
+    if len(val) < need:
+        problems.append(f"only {len(val)} held-out clips at --val-pct "
+                        f"{val_pct} (the agreement check needs >= {need}); "
+                        "raise --val-pct")
+    return {"datasets": rows, "train": len(train), "val": len(val),
+            "teachers": teachers, "val_pct": val_pct,
+            "ok": not problems, "problems": problems}
+
+
+def resolve_resume(resume: str | None, ckpt_dir: str | None) -> str | None:
+    """``--resume auto``: ``<ckpt-dir>/latest.pt`` when it exists (the
+    newest checkpoint — every save overwrites it atomically), else None =
+    start fresh. Any other value is a checkpoint path."""
+    if resume != "auto":
+        return resume
+    path = os.path.join(ckpt_dir or "checkpoints/depthbrain", "latest.pt")
+    return path if os.path.isfile(path) else None
+
+
+def format_summary(report: dict) -> str:
+    """The one-page result of a run, from ``depthbrain_report.json``."""
+    ag = report.get("agreement") or {}
+    m, gate = ag.get("measured") or {}, ag.get("gate") or {}
+
+    def num(v, fmt):
+        return "n/a" if v is None else format(v, fmt)
+
+    per = [r for r in (ag.get("pearson_per_clip") or {}).values()
+           if r is not None]
+    lines = [
+        "DepthBrain — training summary",
+        "=" * 40,
+        f"steps trained:      {report.get('step')}",
+        f"final loss:         {num(report.get('final_loss'), '.4f')} "
+        f"(mean of the last {report.get('final_loss_steps', 0)} steps)",
+        f"params:             {report.get('params')}",
+        f"clips:              {report.get('train_clips')} train / "
+        f"{report.get('val_clips')} held out",
+        f"teachers:           {report.get('teachers')}",
+        "",
+        "agreement with MiDaS on held-out clips (gate):",
+        f"  held-out clips    {num(m.get('val_clips'), 'd')}   "
+        f"(need >= {gate.get('min_val_clips')})",
+        f"  order             {num(m.get('val_order'), '.3f')}   "
+        f"(need >= {gate.get('min_order')})",
+        f"  mae               {num(m.get('val_mae'), '.4f')}  "
+        f"(need <= {gate.get('max_mae')})",
+        f"  flicker           {num(m.get('val_flicker'), '.4f')}  "
+        f"(need <= {gate.get('max_flicker')})",
+        f"  pearson (mean)    {num(m.get('val_pearson'), '.3f')}   "
+        f"(need >= {gate.get('min_pearson')})",
+    ]
+    if per:
+        lines.append(f"  pearson per clip  min {min(per):.3f}  "
+                     f"max {max(per):.3f}  ({len(per)} clips)")
+    lines += ["", "RESULT: " + ("PASS" if ag.get("passed") else "FAIL")]
+    lines += [f"  - {r}" for r in ag.get("reasons") or []]
+    if not ag:
+        lines.append("  - no agreement check recorded (run not finished)")
+    return "\n".join(lines)
 
 
 def load_pair(item, size: int, frames: int, start: int, stride: int,
@@ -172,6 +270,7 @@ class DepthBrainTrainer:
         self.perm = self._perm()
         self.last_eval: dict | None = None
         self.agreement: dict | None = None
+        self.recent_losses: list[float] = []   # for the report's final loss
         if log_path:
             os.makedirs(os.path.dirname(os.path.abspath(log_path)),
                         exist_ok=True)
@@ -229,16 +328,19 @@ class DepthBrainTrainer:
                 self.ema.update({"depthbrain": self.model})
         self.step += 1
         self.agreement = None   # a check is only valid for the weights it measured
+        self.recent_losses = (self.recent_losses + [loss_value])[-100:]
         rec = {"step": self.step, "loss": loss_value, "ssi": parts["ssi"],
                "grad": parts["grad"], "grad_norm": gn, "outcome": outcome,
                "lr": self.opt.param_groups[0]["lr"]}
         return rec
 
     @torch.no_grad()
-    def evaluate(self, max_clips: int | None = 64) -> dict:
+    def evaluate(self, max_clips: int | None = 64,
+                 per_clip: bool = False) -> dict:
         """Agreement with the teacher on the held-out clips (EMA weights
         when kept; ``max_clips=None`` = all of them). Fixed frames, no
-        flip, RNG untouched."""
+        flip, RNG untouched. ``per_clip`` adds each clip's Pearson
+        (``val_pearson_per_clip``, keyed by dataset folder/file)."""
         items = self.val_items[:max_clips]
         if not items:
             return {"val_clips": 0}
@@ -258,16 +360,22 @@ class DepthBrainTrainer:
         self.model.train(was_training)
         m = depth_metrics(torch.stack(preds), torch.stack(tgts))
         out = {"eval": self.step, "val_mae": m["mae"], "val_order": m["order"],
-               "val_flicker": m["flicker"], "val_clips": m["clips"],
+               "val_flicker": m["flicker"], "val_pearson": m["pearson"],
+               "val_clips": m["clips"],
                "weights": "ema" if self.ema is not None else "raw"}
+        if per_clip:
+            out["val_pearson_per_clip"] = {
+                f"{os.path.basename(os.path.normpath(it[0]))}/{it[1]}": r
+                for it, r in zip(items, m["pearson_per_clip"])}
         self.last_eval = out
         return out
 
     def final_check(self, gate: dict | None = None) -> dict:
         """Measure ALL held-out clips and run the agreement check; the
         result is stored in the checkpoint (``agreement``) that prep reads."""
-        self.agreement = agreement_check(self.evaluate(max_clips=None), gate,
-                                         step=self.step)
+        ev = self.evaluate(max_clips=None, per_clip=True)
+        self.agreement = agreement_check(ev, gate, step=self.step)
+        self.agreement["pearson_per_clip"] = ev.get("val_pearson_per_clip")
         return self.agreement
 
     # ------------------------------------------------------------ state
@@ -282,6 +390,7 @@ class DepthBrainTrainer:
             "guard_bad_steps": self.guard.bad_steps,
             "train_config": self.train_config, "teachers": self.teachers,
             "last_eval": self.last_eval, "agreement": self.agreement,
+            "recent_losses": self.recent_losses,
         }
 
     def save(self, path: str) -> None:
@@ -320,6 +429,7 @@ class DepthBrainTrainer:
         tr.perm = tr._perm()
         tr.last_eval = payload.get("last_eval")
         tr.agreement = payload.get("agreement")
+        tr.recent_losses = list(payload.get("recent_losses") or [])
         load_checkpoint(path, restore_rng=True)   # continue the same streams
         return tr
 
@@ -332,6 +442,9 @@ class DepthBrainTrainer:
             "train_clips": len(self.train_items),
             "val_clips": len(self.val_items), "teachers": self.teachers,
             "val": self.last_eval, "agreement": self.agreement,
+            "final_loss": (float(np.mean(self.recent_losses))
+                           if self.recent_losses else None),
+            "final_loss_steps": len(self.recent_losses),
             "note": ("These numbers measure agreement with the teacher's "
                      "(MiDaS) maps on held-out clips, not true depth. order "
                      "is the share of near/far pixel pairs put in the "
@@ -349,7 +462,9 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--data", nargs="+", default=None,
                     help="prepared dataset folder(s) with depth maps")
-    ap.add_argument("--resume", default=None, help="checkpoint to continue")
+    ap.add_argument("--resume", default=None,
+                    help="checkpoint to continue, or 'auto' = <ckpt-dir>/"
+                         "latest.pt if it exists, else start fresh")
     ap.add_argument("--steps", type=int, default=20000,
                     help="train until this step (total, across resumes)")
     ap.add_argument("--batch-size", type=int, default=None)
@@ -377,7 +492,43 @@ def main(argv=None) -> None:
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--eval-every", type=int, default=1000)
     ap.add_argument("--save-every", type=int, default=1000)
+    ap.add_argument("--session-steps", type=int, default=None,
+                    help="stop THIS session after this many steps (latest.pt "
+                         "saved); a later --resume continues to --steps")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="check the data (clips == depth maps == manifest "
+                         "lines, enough held-out clips) and exit; no training")
+    ap.add_argument("--summary", metavar="REPORT",
+                    help="print the one-page summary of a depthbrain_report"
+                         ".json and exit")
     args = ap.parse_args(argv)
+
+    if args.summary:
+        with open(args.summary, encoding="utf-8") as fh:
+            print(format_summary(json.load(fh)))
+        return
+    if args.dry_run:
+        if not args.data:
+            ap.error("--dry-run needs --data")
+        audit = audit_data(args.data, 5.0 if args.val_pct is None
+                           else args.val_pct)
+        for row in audit["datasets"]:
+            print(f"{row['data']}: manifest lines {row['manifest_lines']}, "
+                  f"clips {row['clips']}, depth maps {row['depth_maps']} -> "
+                  f"{row['train']} train / {row['val']} held out")
+        print(f"total: {audit['train']} train / {audit['val']} held out "
+              f"(--val-pct {audit['val_pct']}), teachers {audit['teachers']}")
+        for p in audit["problems"]:
+            print(f"PROBLEM: {p}")
+        print("DRY RUN: " + ("OK — ready to train" if audit["ok"]
+                             else "FAILED — fix the data before training"))
+        sys.exit(0 if audit["ok"] else 1)
+    if args.session_steps is not None and args.session_steps < 1:
+        ap.error("--session-steps must be >= 1")
+    if args.resume == "auto":
+        args.resume = resolve_resume("auto", args.ckpt_dir)
+        print("resume auto: " + (f"continuing {args.resume}" if args.resume
+                                 else "no latest.pt yet — starting fresh"))
 
     opts = dict(batch_size=args.batch_size, frames=args.frames, size=args.size,
                 lr=args.lr, lr_schedule=args.lr_schedule,
@@ -405,8 +556,25 @@ def main(argv=None) -> None:
     print(f"DepthBrain: {count_params(tr.model) / 1e6:.2f}M params, "
           f"{len(tr.train_items)} train / {len(tr.val_items)} val clips, "
           f"teachers {tr.teachers}, device {tr.device}")
+    if args.resume:
+        print(f"resumed at step {tr.step} (target {args.steps})")
+    if len(tr.val_items) < AGREEMENT_GATE["min_val_clips"]:
+        print(f"WARNING: only {len(tr.val_items)} held-out clips; the "
+              f"agreement check needs >= {AGREEMENT_GATE['min_val_clips']} "
+              "and will fail — raise --val-pct (fresh runs only)",
+              file=sys.stderr)
     log = tr.logger.log if tr.logger else (lambda r, echo=None: None)
+    session_end = (None if args.session_steps is None
+                   else tr.step + args.session_steps)
     while tr.step < args.steps:
+        if session_end is not None and tr.step >= session_end:
+            tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
+            print(f"session stopped at step {tr.step} of {args.steps}; "
+                  f"checkpoint {os.path.join(tr.ckpt_dir, 'latest.pt')} — "
+                  "run again with --resume to continue")
+            if tr.logger:
+                tr.logger.close()
+            return
         rec = tr.train_step()
         if tr.step % args.log_every == 0 or tr.step == args.steps:
             print(f"step {tr.step}: loss {rec['loss']:.4f} "
@@ -416,7 +584,8 @@ def main(argv=None) -> None:
             ev = tr.evaluate()
             if ev.get("val_clips"):
                 print(f"  val: mae {ev['val_mae']:.4f}  order "
-                      f"{ev['val_order']:.3f}  flicker {ev['val_flicker']:.4f}")
+                      f"{ev['val_order']:.3f}  flicker {ev['val_flicker']:.4f}"
+                      f"  pearson {ev['val_pearson']:.3f}")
             log(ev, echo=False)
         if tr.step % args.save_every == 0 or tr.step == args.steps:
             tr.save(os.path.join(tr.ckpt_dir, "latest.pt"))
