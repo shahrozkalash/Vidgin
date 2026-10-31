@@ -27,7 +27,7 @@ from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.text.tokenizer import CaptionTokenizer, tokenizer_from_dict
-from vidgen.vae.model import CausalVAE
+from vidgen.vae.model import CausalVAE, build_vae
 
 
 def save_frames(frames: np.ndarray, outdir: str, duration_ms: int = 62) -> dict:
@@ -164,12 +164,15 @@ def main() -> None:
     else:
         cfg = get_preset(payload["preset"])
 
-    vae = CausalVAE().to(device).eval()
     vae_path = args.vae_ckpt or payload.get("vae_ckpt")
     if vae_path:
         vp = load_checkpoint(vae_path, map_location=device)
+        # The VAE checkpoint's own shape wins (16/32 and grown 32/64
+        # checkpoints both decode correctly here).
+        vae = build_vae(payload=vp).to(device).eval()
         vae.load_state_dict(vae_weights(vp))
     else:
+        vae = build_vae(cfg).to(device).eval()
         print("WARNING: no --vae-ckpt given and the checkpoint names no "
               "VAE: decoding with a RANDOMLY INITIALIZED VAE. Output is "
               "only meaningful for smoke tests trained the same way.",

@@ -34,7 +34,7 @@ from vidgen.checkpoint import load_checkpoint, vae_weights
 from vidgen.config import get_preset, resolve_device
 from vidgen.data.clips import FolderClipDataset
 from vidgen.data.moving_mnist import MovingMNISTDataset
-from vidgen.vae.model import CausalVAE
+from vidgen.vae.model import build_vae
 from vidgen.vae.stats import (
     measure_latent_stats, save_recon_mp4, save_recon_preview,
 )
@@ -69,7 +69,7 @@ def main() -> int:
     if payload.get("kind") not in ("vae", "vae-weights-fp16"):
         print(f"error: {args.vae_ckpt} is not a VAE checkpoint", file=sys.stderr)
         return 2
-    vae = CausalVAE().to(device)
+    vae = build_vae(payload=payload).to(device)
     vae.load_state_dict(vae_weights(payload))
 
     if args.data_dir:

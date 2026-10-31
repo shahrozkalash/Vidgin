@@ -54,7 +54,7 @@ def estimate(preset: str, batch_size: int, grad_checkpoint: bool,
     with torch.device("meta"):
         dit = DiT(cfg)
         text = build_text_encoder(cfg)
-        vae = CausalVAE()
+        vae = CausalVAE(cfg.vae_latent_ch, cfg.vae_base_ch)
     dit_p, text_p, vae_p = count_params(dit), count_params(text), count_params(vae)
     total = dit_p + text_p + vae_p
 

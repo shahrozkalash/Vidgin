@@ -1,8 +1,11 @@
 """VAE weights-only warm start (Stage 2: Small VAE from Round-1 tiny VAE).
 
-The VAE architecture is preset-independent, so a trained tiny VAE checkpoint
-can initialize the Small VAE. Warm start copies only the weights — optimizer,
-step counter, loss history and RNG stay fresh (it is a new run, not a resume).
+Warm start copies only the weights — optimizer, step counter, loss
+history and RNG stay fresh (it is a new run, not a resume). Donor and
+target must share the same VAE shape: while every preset's VAE was
+16/32 a tiny donor initialized the Small VAE directly; since the
+2026-10-31 growth, Small's VAE is 32/64, so a 16/32 donor is first
+transplanted with vidgen.vae.grow (the flow tested below).
 """
 
 import math
@@ -37,22 +40,44 @@ def _params(tr):
     return {k: v.detach().clone() for k, v in tr.vae.state_dict().items()}
 
 
-def test_warmstart_copies_donor_weights_across_presets(donor_ckpt):
-    path, donor_params = donor_ckpt
+def test_warmstart_across_vae_shapes_is_refused(donor_ckpt):
+    # The donor is 16/32; the small preset's VAE is now 32/64 (grown).
+    # A direct strict load must refuse — silently pouring the donor
+    # into the wrong geometry is exactly what growth exists to avoid.
+    path, _ = donor_ckpt
+    tr = VAETrainer(preset="small", seed=7, num_clips=4, batch_size=2,
+                    ckpt_dir=None)
+    with pytest.raises(RuntimeError):
+        tr.load_vae_weights(path)
+
+
+def test_warmstart_copies_grown_donor_weights(tmp_path, donor_ckpt):
+    # The post-growth flow: transplant the 16/32 donor into the small
+    # preset's 32/64 geometry, then warm-start from the grown file.
+    from vidgen.pool import load_payload_file
+    from vidgen.vae.grow import grow_vae_payload
+
+    path, _ = donor_ckpt
+    grown = grow_vae_payload(load_payload_file(path), "small")
+    grown_path = str(tmp_path / "grown_donor.pt")
+    torch.save(grown, grown_path)
+    grown_params = grown["vae"]
+
     tr = VAETrainer(preset="small", seed=7, num_clips=4, batch_size=2,
                     ckpt_dir=None)
     before = _params(tr)
-    tr.load_vae_weights(path)
+    tr.load_vae_weights(grown_path)
     after = _params(tr)
-    assert set(after) == set(donor_params)
+    assert set(after) == set(grown_params)
     for k in after:
-        assert torch.equal(after[k], donor_params[k]), f"weight {k} not copied"
+        assert torch.equal(after[k], grown_params[k]), \
+            f"weight {k} not copied"
     assert any(not torch.equal(after[k], before[k]) for k in after), \
         "weights unchanged by warm start"
     # fresh run, not a resume
     assert tr.step == 0
     assert tr.loss_history == []
-    assert tr.init_from == path
+    assert tr.init_from == grown_path
     assert all(len(st) == 0 for st in tr.opt.state.values()), \
         "optimizer must stay fresh after warm start"
 

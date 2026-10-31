@@ -124,19 +124,24 @@ def _count(module):
 
 
 def test_documented_parameter_counts():
-    for preset, dit_expected in (("tiny", 21_446_848),
-                                 ("small", 285_936_704)):
+    # Small's counts moved on 2026-10-31 (VAE growth): its latent
+    # channels went 16 -> 32, so the DiT's patch-in/head grew by
+    # 131,136 params and its VAE is the grown 32/64 (14,588,483).
+    for preset, dit_expected, vae_expected in (
+            ("tiny", 21_446_848, 3_650_851),
+            ("small", 286_067_840, 14_588_483)):
         cfg = get_preset(preset)
         with torch.device("meta"):
-            dit, vae = DiT(cfg), CausalVAE()
+            dit, vae = DiT(cfg), CausalVAE(cfg.vae_latent_ch,
+                                           cfg.vae_base_ch)
         assert _count(dit) == dit_expected, preset
-        assert _count(vae) == 3_650_851, preset
+        assert _count(vae) == vae_expected, preset
 
 
 def test_estimator_verdicts():
     est = _load_script("estimate_memory")
     small = est.estimate("small", 2, True, "none")
-    assert small["dit_params"] == 285_936_704
+    assert small["dit_params"] == 286_067_840
     assert small["fits"]["Free T4 (Colab/Kaggle)"] is True
     big = est.estimate("vidgen480p", 1, True, "bf16")
     assert big["fits"]["Free T4 (Colab/Kaggle)"] is False

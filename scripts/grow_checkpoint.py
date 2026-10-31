@@ -11,8 +11,9 @@ normal trainer flag:
   python -m vidgen.train --preset vidgen480p \\
       --init-weights grown_480p.pt --vae-ckpt <vae ckpt> ...
 
-The VAE is not grown — it is the same architecture at every size and
-transfers exactly via vidgen.train_vae --init-weights.
+The VAE is not grown here — within one shape it transfers exactly
+via vidgen.train_vae --init-weights; a VAE shape change uses
+scripts/grow_vae.py (vidgen/vae/grow.py).
 
 Usage:
   python scripts/grow_checkpoint.py small_latest.pt \\

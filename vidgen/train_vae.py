@@ -28,7 +28,7 @@ import sys
 import torch
 
 from vidgen.checkpoint import load_checkpoint, save_checkpoint
-from vidgen.config import get_preset, resolve_device
+from vidgen.config import VidgenConfig, get_preset, resolve_device
 from vidgen.data.buckets import BucketSampler
 from vidgen.distributed import (
     DistInfo,
@@ -53,7 +53,7 @@ from vidgen.train_utils import (
     guarded_optimizer_step, load_pooled_ema, make_grad_scaler,
     oom_guidance, validate_train_options,
 )
-from vidgen.vae.model import CausalVAE, vae_loss
+from vidgen.vae.model import CausalVAE, build_vae, vae_loss
 
 
 class VAETrainer:
@@ -70,7 +70,8 @@ class VAETrainer:
                  grad_accum: int | None = None,
                  amp: str | None = None,
                  ema_decay: float | None = None,
-                 dist_info: DistInfo | None = None):
+                 dist_info: DistInfo | None = None,
+                 cfg: VidgenConfig | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
         # this is the single-process info and every path below is exactly
         # the original single-GPU one.
@@ -82,7 +83,11 @@ class VAETrainer:
         self.is_main_rank = dist_info.is_main
         seed_everything(seed)
         self.seed = seed
-        self.cfg = get_preset(preset)
+        # An explicit cfg wins over the named preset: on resume this is
+        # the checkpoint's STORED config, so a pre-growth Small run
+        # (VAE 16/32) resumes into its own geometry even though the
+        # small preset now describes the grown 32/64 VAE.
+        self.cfg = cfg if cfg is not None else get_preset(preset)
         self.device = resolve_rank_device(resolve_device(device), dist_info)
         self.batch_size = batch_size
         self.kl_weight = kl_weight
@@ -91,7 +96,7 @@ class VAETrainer:
         if ckpt_dir:
             os.makedirs(ckpt_dir, exist_ok=True)
 
-        self.vae = CausalVAE().to(self.device)
+        self.vae = build_vae(self.cfg).to(self.device)
         self.opt = torch.optim.AdamW(self.vae.parameters(), lr=lr)
         # Phase 4/5 (shared with the DiT trainer via vidgen.train_utils):
         # LR schedule, AMP, gradient accumulation — defaults reproduce
@@ -294,9 +299,13 @@ class VAETrainer:
 
         Copies just the trained VAE weights (e.g. Round-1 tiny VAE) into this
         fresh trainer. Optimizer, step counter, loss history and RNG stay
-        fresh — this is a new run, not a resume. The VAE architecture is
-        preset-independent, so a tiny checkpoint can initialize the Small VAE;
-        any shape mismatch raises immediately (strict load).
+        fresh — this is a new run, not a resume. The load is strict:
+        donor and trainer must share the same VAE shape (a tiny 16/32
+        donor initializes any 16/32 target, e.g. the 480p VAE). To
+        start from a donor of a DIFFERENT shape (the 16/32 Stage 2
+        VAE -> the grown 32/64 Small VAE), transplant it first with
+        vidgen.vae.grow / scripts/grow_vae.py; a shape mismatch here
+        raises immediately (strict load).
 
         Step offset (pool rounds): an explicit ``start_step`` wins;
         otherwise a pooled checkpoint (carries ``pool`` metadata) donates
@@ -336,6 +345,12 @@ class VAETrainer:
 
         payload = load_checkpoint(path)
         kwargs.pop("preset", None)  # preset always comes from the checkpoint
+        if payload.get("config"):
+            # The stored config is authoritative for the VAE geometry:
+            # it is what the checkpoint's weights were built for (e.g.
+            # a 16/32 Small checkpoint in a world where the small
+            # preset is 32/64).
+            kwargs["cfg"] = VidgenConfig.from_dict(payload["config"])
         stored_tc = payload.get("train_config") or {}
         for key in ("warmup_steps", "lr_schedule", "total_steps",
                     "grad_accum", "amp", "ema_decay"):
@@ -379,8 +394,9 @@ def main() -> None:
     ap.add_argument("--init-weights", default=None, metavar="PATH",
                     help="weights-only warm start: initialize the VAE from a donor "
                          "VAE checkpoint (e.g. the Round-1 tiny VAE) and train as a "
-                         "fresh run. The VAE architecture is preset-independent, so "
-                         "this works across presets. For a pool round, pass the "
+                         "fresh run. Donor and target must share the same VAE "
+                         "shape; transplant a different-shaped donor first with "
+                         "scripts/grow_vae.py. For a pool round, pass the "
                          "pooled checkpoint: step numbering then continues from "
                          "its stored step. Mutually exclusive with --resume.")
     ap.add_argument("--start-step", type=int, default=None,

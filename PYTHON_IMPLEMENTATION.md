@@ -26,7 +26,7 @@ The existing React/TypeScript studio app is untouched — the Python code is a n
 | `vidgen/sampler.py` | Part 8 | Euler / Midpoint / RK4 ODE samplers with classifier-free guidance; oracle recovery < 1e-5 |
 | `vidgen/checkpoint.py` | Part 7 | Save/load with python+numpy+torch RNG states → resume reproduces next-step loss bit-for-bit |
 | `vidgen/train.py` | Part 7 | `DiTTrainer` + CLI: rectified-flow DiT training in VAE latent space on Moving MNIST; AdamW, grad-clip 1.0, 10% caption dropout, `--vae-ckpt` for a trained VAE; `--data-dir` trains on a prepared real-clip directory instead; DDP multi-GPU under `torchrun` (see Multi-GPU section) |
-| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → Small VAE; VAE arch is preset-independent); DDP multi-GPU under `torchrun` |
+| `vidgen/train_vae.py` | Part 3 | `VAETrainer` + CLI: VAE training (recon MSE + KL), same checkpointing; `--data-dir` for real clips; `--init-weights` for a weights-only warm start from a donor VAE checkpoint (e.g. Round-1 tiny VAE → a same-shape 16/32 VAE; a different-shaped donor is transplanted first by `vidgen/vae/grow.py`); DDP multi-GPU under `torchrun` |
 | `vidgen/distributed.py` | Part 7 | DDP helpers: torchrun env init (nccl on CUDA / gloo on CPU, no-op single-process fallback), per-rank device selection, barrier/destroy, `unwrap_model` / `plain_state_dict` (checkpoints never carry `module.` prefixes), per-rank seed derivation, global-batch sharding, explicit gradient sync for the unwrapped text encoder |
 | `tests/test_distributed.py` | Part 7 | Helper unit tests (fallback, env parsing, seed/shard math, plain state dicts), proof single-process trainers are unwrapped/unsharded, and simulated 2-rank tests: disjoint clip slices, divergent-but-deterministic RNG streams, rank-1 writes no checkpoint |
 | `vidgen/grow.py` | Part 7 | Model growth ("small brains first"): transplants a trained DiT's weights into a LARGER preset — head-aware width expansion, endpoint-preserving depth layer mapping, AdaLN chunk alignment, legacy→transformer text-embedding transplant; output is a weights-only checkpoint loadable via `train.py --init-weights`. See the Model growth section |
@@ -444,8 +444,15 @@ How the transplant works:
   fresh. Transformer→legacy is rejected as a downgrade.
 - **Depth conditioning** is inherited from the source config; the
   CLI's `--depth` adds a fresh zero-init stem to a plain source.
-- The **VAE** needs no growth: one identical architecture at every
-  size, transferred exactly by `train_vae.py --init-weights`.
+- The **VAE** transfers exactly by `train_vae.py --init-weights`
+  within one shape. Since 2026-10-31 the Small preset's VAE is grown
+  (latent 16 / base 32 -> 32 / 64, 3.65M -> 14.59M params) by its own
+  transplant, `vidgen/vae/grow.py` / `scripts/grow_vae.py`: every
+  source weight is copied into the widened tensors with the new
+  channels zero-initialized, so the grown VAE reproduces the donor's
+  function at init except for the mid ResBlocks' GroupNorm statistics
+  (8 groups at both widths, so groups widen) — measured at ~0.5 dB
+  reconstruction PSNR on a held-out clip.
 
 Honest limits: the grown model does not reproduce the source's
 function (LayerNorm statistics, token grid and RoPE geometry all
@@ -836,8 +843,9 @@ New options (all off by default; old checkpoints load unchanged):
   at a time, so values do not depend on batch composition) and keeps
   the latent in CPU RAM; later epochs skip clip loading and the VAE
   encoder entirely. RAM cost = latent size × clips: ~20 KB/clip at
-  `tiny`, but **576 KB/clip at `small`** (16 × 9 × 32 × 32 fp32) —
-  ~3.5 GB for 6,339 clips. The trainer prints the estimate at start;
+  `tiny`, but **1,152 KB/clip at `small`** (32 × 9 × 32 × 32 fp32,
+  since the 2026-10-31 VAE growth doubled Small's latent channels) —
+  ~7 GB for 6,339 clips. The trainer prints the estimate at start;
   `--cache-dtype fp16` halves it (2026-10-29).
 - **Per-block modulation** — `--per-block-mod` (config
   `per_block_mod`) adds a zero-init learned 9×D offset per block to the

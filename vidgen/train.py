@@ -67,7 +67,7 @@ from vidgen.train_utils import (
     oom_guidance, validate_train_options,
 )
 from vidgen.dit.model import DiT
-from vidgen.vae.model import CausalVAE
+from vidgen.vae.model import CausalVAE, build_vae
 
 # Storage dtypes for the opt-in latent cache (--cache-dtype).
 CACHE_DTYPES = {"fp32": torch.float32, "fp16": torch.float16}
@@ -130,10 +130,16 @@ class DiTTrainer:
         # stored a forgotten --vae-ckpt silently fell back to a random
         # VAE (the payload.get("vae_ckpt") readers never found a value).
         self.vae_ckpt = vae_ckpt
-        self.vae = CausalVAE().to(self.device)
+        # Sized from this run's config; when a VAE checkpoint is given
+        # it is REBUILT from the checkpoint's own shape below — the
+        # checkpoint wins (a 16/32 VAE paired with a grown-config run
+        # must encode in its own geometry; a mismatch with the DiT's
+        # latent_channels then fails loudly at the first encode).
+        self.vae = build_vae(self.cfg).to(self.device)
         if vae_ckpt:
             payload = load_checkpoint(vae_ckpt, map_location=str(self.device))
             assert payload["kind"] == "vae", f"not a VAE checkpoint: {vae_ckpt}"
+            self.vae = build_vae(payload=payload).to(self.device)
             # The VAE's EMA weights when it has them — the same rule
             # sampling/evaluation use, so the latent space always matches.
             self.vae.load_state_dict(vae_weights(payload))
@@ -208,7 +214,7 @@ class DiTTrainer:
         # at a time, so the value never depends on batch composition) and
         # reused every epoch — skipping both the .npy load and the VAE
         # encoder. Kept on CPU; not checkpointed (it is rebuilt on demand).
-        # RAM: see latent_cache_bytes() — ~576 KB/clip at the Small preset
+        # RAM: see latent_cache_bytes() — ~1,152 KB/clip at the Small preset
         # in fp32; cache_dtype "fp16" halves it (latents are rounded to
         # fp16 once, so a cached run is no longer bit-identical to an
         # uncached one).
@@ -794,7 +800,7 @@ def main() -> None:
                     help="encode each clip with the frozen VAE once and "
                          "reuse the latent every epoch (kept in CPU RAM): "
                          "after the first epoch, steps skip clip loading "
-                         "and the VAE encoder entirely. RAM: ~576 KB per "
+                         "and the VAE encoder entirely. RAM: ~1,152 KB per "
                          "clip at the Small preset (the estimate is "
                          "printed at start)")
     ap.add_argument("--cache-dtype", default="fp32", choices=["fp32", "fp16"],

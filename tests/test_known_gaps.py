@@ -70,9 +70,11 @@ def test_latent_cache_bytes_match_the_real_cost(tmp_path):
     per = 4 * cfg.latent_channels * cfg.latent_t * cfg.latent_h * cfg.latent_w
     assert tr.latent_cache_bytes() == per * len(tr.dataset)
     small = get_preset("small")
-    # The figure the docs quote: 576 KB per clip at the Small preset, fp32.
+    # The figure the docs quote: 1,152 KB per clip at the Small preset,
+    # fp32. (Was 576 KB before the 2026-10-31 VAE growth took Small's
+    # latent channels from 16 to 32 — the cache cost doubles with it.)
     assert 4 * small.latent_channels * small.latent_t * small.latent_h \
-        * small.latent_w == 576 * 1024
+        * small.latent_w == 1152 * 1024
 
 
 def test_fp16_latent_cache_halves_ram_and_trains(tmp_path):

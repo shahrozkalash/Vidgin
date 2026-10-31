@@ -26,6 +26,18 @@ class VidgenConfig:
     width: int
     frames: int                 # T, must satisfy T = 4k + 1
     latent_channels: int = 16
+    # VAE geometry (2026-10-31 VAE growth): the VAE is no longer one
+    # fixed shape at every preset. ``vae_latent_ch`` must always equal
+    # ``latent_channels`` (the DiT consumes exactly the VAE's latent
+    # channels) and ``vae_base_ch`` is the VAE's internal width. The
+    # historical shape is latent 16 / base 32 (3,650,851 params); the
+    # Small preset grows to 32 / 64 (14,588,483 params) so Stage 2's
+    # VAE stops being the reconstruction bottleneck. Every other preset
+    # keeps 16/32, and a checkpoint's stored config always wins over
+    # the preset (old 16/32 Small checkpoints load with their own
+    # shape — see vidgen.vae.model.build_vae).
+    vae_latent_ch: int = 16
+    vae_base_ch: int = 32
     latent_t: int = 5
     latent_h: int = 8
     latent_w: int = 8
@@ -96,6 +108,16 @@ class VidgenConfig:
             )
         if self.latent_h != self.height // 8 or self.latent_w != self.width // 8:
             raise ValueError("Latent spatial dims must be H/8, W/8 (8x compression)")
+        if self.vae_latent_ch != self.latent_channels:
+            raise ValueError(
+                f"VAE latent channels ({self.vae_latent_ch}) must equal "
+                f"latent_channels ({self.latent_channels}): the DiT "
+                f"consumes exactly the VAE's latent channels")
+        if self.vae_base_ch < 8 or self.vae_base_ch % 8 != 0:
+            raise ValueError(
+                f"VAE base channels ({self.vae_base_ch}) must be a "
+                f"multiple of 8 (the VAE's framewise GroupNorm uses "
+                f"8 groups at every width)")
         if sum(self.dit.rope_split) != self.head_dim:
             raise ValueError(
                 f"RoPE split {self.dit.rope_split} must sum to head dim {self.head_dim}"
@@ -141,6 +163,10 @@ def _tiny() -> VidgenConfig:
 def _small() -> VidgenConfig:
     return VidgenConfig(
         name="small", height=256, width=256, frames=33,
+        # Grown VAE (2026-10-31): latent 32 / base 64. The DiT's
+        # latent_channels follows the VAE to 32. Pre-growth Small VAE
+        # checkpoints (16/32) keep loading via their stored config.
+        latent_channels=32, vae_latent_ch=32, vae_base_ch=64,
         latent_t=9, latent_h=32, latent_w=32,
         dit=DiTConfig(layers=16, dim=1024, heads=16, ffn=4096, rope_split=(22, 22, 20)),
         target_params_m=270.0,

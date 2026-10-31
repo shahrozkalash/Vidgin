@@ -31,9 +31,10 @@ performs the transplant ("growth surgery"):
   encoder knows is written into the bucket the transformer encoder's
   word-hash tokenizer assigns it; the transformer stack itself starts
   fresh — there is no legacy counterpart to transplant from.
-- The VAE is NOT handled here: it is one identical architecture at
-  every preset size, so it transfers exactly through
-  ``vidgen.train_vae --init-weights`` already.
+- The VAE is NOT handled here: within one VAE shape it transfers
+  exactly through ``vidgen.train_vae --init-weights``. A VAE shape
+  change (the 2026-10-31 growth of Small's VAE from latent 16 / base
+  32 to 32 / 64) is a separate transplant — see vidgen/vae/grow.py.
 
 Honest limits: the grown model does NOT reproduce the source model's
 function — LayerNorm statistics, the token grid (resolution), and the
@@ -455,8 +456,8 @@ def grow_payload(payload: dict, target: str | VidgenConfig,
         raise ValueError(
             f"grow needs a DiT checkpoint (kind='dit' with 'dit' and "
             f"'text_enc' weights), got kind={payload.get('kind')!r} — "
-            f"the VAE needs no growth: it is the same architecture at "
-            f"every size and transfers via train_vae --init-weights")
+            f"for a VAE checkpoint use vidgen.vae.grow (same-shape "
+            f"VAEs transfer via train_vae --init-weights)")
     src_cfg_dict = payload.get("config")
     if src_cfg_dict:
         src_cfg = VidgenConfig.from_dict(copy.deepcopy(src_cfg_dict))

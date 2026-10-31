@@ -42,7 +42,7 @@ from vidgen.sampler import sample_latents
 from vidgen.seed import seed_everything
 from vidgen.text.encoder import build_text_encoder
 from vidgen.text.tokenizer import CaptionTokenizer, tokenizer_from_dict
-from vidgen.vae.model import CausalVAE
+from vidgen.vae.model import build_vae
 from vidgen.video_io import write_mp4
 
 DEFAULT_PROMPTS = [
@@ -69,7 +69,7 @@ def generate_clips(dit_ckpt: str, vae_ckpt: str | None, prompts, seeds,
         raise ValueError("no VAE checkpoint given (--vae-ckpt) and the "
                          "DiT checkpoint does not name one")
     vp = load_checkpoint(vae_path, map_location=str(device))
-    vae = CausalVAE().to(device).eval()
+    vae = build_vae(payload=vp).to(device).eval()
     vae.load_state_dict(vae_weights(vp))
 
     tokenizer = (tokenizer_from_dict(payload["tokenizer"])

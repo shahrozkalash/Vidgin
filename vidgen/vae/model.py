@@ -153,6 +153,59 @@ class CausalVAE(nn.Module):
         return recon, mu, logvar, kl
 
 
+def infer_vae_shape(state_dict: dict) -> tuple[int, int]:
+    """(latent_ch, base_ch) of a VAE state dict, read from the tensors.
+
+    The state dict is the ground truth of a checkpoint's geometry:
+    ``encoder.mu.weight`` has latent_ch output rows and
+    ``encoder.in_conv.conv.weight`` has base_ch. Used so a checkpoint
+    always loads into a VAE of ITS OWN shape, whatever preset the
+    caller asked for (a pre-growth 16/32 Small checkpoint must not be
+    poured into the grown 32/64 Small architecture).
+    """
+    try:
+        latent_ch = int(state_dict["encoder.mu.weight"].shape[0])
+        base_ch = int(state_dict["encoder.in_conv.conv.weight"].shape[0])
+    except (KeyError, IndexError, AttributeError) as e:
+        raise ValueError(
+            "cannot infer VAE shape: state dict lacks "
+            "encoder.mu.weight / encoder.in_conv.conv.weight") from e
+    return latent_ch, base_ch
+
+
+def build_vae(cfg=None, payload: dict | None = None) -> "CausalVAE":
+    """Construct a CausalVAE with the right geometry for the caller.
+
+    Precedence — a checkpoint's own shape always wins:
+    1. ``payload`` (a VAE checkpoint dict): the shape is inferred from
+       its ``vae`` tensors (EMA weights when the payload carries them,
+       mirroring vidgen.checkpoint.vae_weights), falling back to the
+       payload's stored ``config``.
+    2. ``cfg`` (a VidgenConfig): the config's ``vae_latent_ch`` /
+       ``vae_base_ch`` fields.
+    3. Neither: the historical default, latent 16 / base 32.
+    """
+    if payload is not None:
+        sd = None
+        ema = payload.get("ema")
+        if ema is not None and "vae" in ema:
+            sd = ema["vae"]
+        elif "vae" in payload:
+            sd = payload["vae"]
+        if sd is not None:
+            latent_ch, base_ch = infer_vae_shape(sd)
+            return CausalVAE(latent_ch, base_ch)
+        stored = payload.get("config")
+        if stored:
+            return CausalVAE(int(stored.get("vae_latent_ch", 16)),
+                             int(stored.get("vae_base_ch", 32)))
+        raise ValueError("payload carries no VAE weights or config "
+                         "to size a VAE from")
+    if cfg is not None:
+        return CausalVAE(int(cfg.vae_latent_ch), int(cfg.vae_base_ch))
+    return CausalVAE()
+
+
 def vae_loss(recon, x, kl, kl_weight: float = 1e-4, recon_weight: float = 1.0):
     """Total VAE loss: recon_weight * MSE + kl_weight * KL.
 
