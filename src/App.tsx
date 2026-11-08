@@ -97,7 +97,7 @@ export default function App() {
         <OverviewSection />
 
         {/* Section 2: Long Video (30 Seconds) */}
-        <LongVideoSection currentPreset={currentPreset} />
+        <LongVideoSection />
 
         {/* Section 3: Try it */}
         <TryItSection

@@ -1,30 +1,8 @@
 import React, { useState } from 'react';
-import { PresetKey } from '../types/vidgen';
-import { PRESETS } from '../utils/bucketEngine';
-import { calculateLongVideoSpecs } from '../utils/longVideoEngine';
-import { MemoryTracker } from './MemoryTracker';
-import { ChunkOverlapVisualizer } from './ChunkOverlapVisualizer';
-import {
-  Film,
-  HardDrive,
-  ChevronDown,
-  Sliders,
-} from 'lucide-react';
+import { Film, Sliders } from 'lucide-react';
 
-interface LongVideoSectionProps {
-  currentPreset: PresetKey;
-}
-
-export const LongVideoSection: React.FC<LongVideoSectionProps> = ({ currentPreset }) => {
+export const LongVideoSection: React.FC = () => {
   const [targetDuration, setTargetDuration] = useState<number>(30); // 5 to 60s
-  const [openAccordion, setOpenAccordion] = useState<string | null>(null);
-
-  const toggleAccordion = (id: string) => {
-    setOpenAccordion((prev) => (prev === id ? null : id));
-  };
-
-  const specs = calculateLongVideoSpecs(targetDuration, 16, currentPreset);
-  const cfg = PRESETS[currentPreset] || PRESETS.tiny;
 
   return (
     <section id="long_video" className="scroll-mt-20 space-y-6">
@@ -49,7 +27,7 @@ export const LongVideoSection: React.FC<LongVideoSectionProps> = ({ currentPrese
         </div>
       </div>
 
-      {/* Interactive Duration & Memory Comparison Card */}
+      {/* Interactive Duration Card */}
       <div className="p-5 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-6 shadow-lg shadow-slate-950/40">
         {/* Interactive Duration Scrubber */}
         <div className="space-y-3">
@@ -92,97 +70,6 @@ export const LongVideoSection: React.FC<LongVideoSectionProps> = ({ currentPrese
             <span>30s (6 chunks)</span>
             <span>60s (12 chunks)</span>
           </div>
-        </div>
-
-        {/* 4 Stat Highlights */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-xs text-slate-400 block mb-1">Total Frames</span>
-            <strong className="text-lg font-bold text-white font-mono">
-              {specs.totalFrames}f
-            </strong>
-            <span className="text-[11px] text-slate-400 block mt-0.5">T = 4k + 1</span>
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-xs text-slate-400 block mb-1">Number of Chunks</span>
-            <strong className="text-lg font-bold text-cyan-300 font-mono">
-              {specs.numChunks} Chunks
-            </strong>
-            <span className="text-[11px] text-slate-400 block mt-0.5">5 seconds each</span>
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-xs text-slate-400 block mb-1">Latent Frames</span>
-            <strong className="text-lg font-bold text-slate-200 font-mono">
-              {specs.latentFrames} Latents
-            </strong>
-            <span className="text-[11px] text-slate-400 block mt-0.5">4x temporal VAE</span>
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-xs text-slate-400 block mb-1">Attention Savings</span>
-            <strong className="text-lg font-bold text-emerald-300 font-mono">
-              {specs.attentionComplexityReduction > 1
-                ? `${specs.attentionComplexityReduction.toFixed(1)}x Faster`
-                : 'Baseline'}
-            </strong>
-            <span className="text-[11px] text-slate-400 block mt-0.5">vs Full Attention</span>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Accordions for Deep Technical Details (Interactive Memory Tracker & Overlap Visualizer) */}
-      <div className="space-y-3 pt-2">
-        {/* Accordion 1: Interactive Memory Tracker */}
-        <div className="rounded-2xl bg-slate-900/60 border border-slate-800 overflow-hidden">
-          <button
-            onClick={() => toggleAccordion('memory_tool')}
-            className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between text-left text-sm font-semibold text-slate-200 hover:text-white hover:bg-slate-800/40 transition-colors cursor-pointer"
-            aria-expanded={openAccordion === 'memory_tool'}
-          >
-            <div className="flex items-center gap-2.5">
-              <HardDrive className="w-4 h-4 text-cyan-400" />
-              <span>Deep Technical Tool: Live Memory Tracker &amp; Eviction Simulator</span>
-            </div>
-            <ChevronDown
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                openAccordion === 'memory_tool' ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {openAccordion === 'memory_tool' && (
-            <div className="p-4 sm:p-6 border-t border-slate-800/60 bg-slate-950/80">
-              <MemoryTracker currentPreset={currentPreset} />
-            </div>
-          )}
-        </div>
-
-        {/* Accordion 2: 1-Latent Overlap & Seam Visualizer */}
-        <div className="rounded-2xl bg-slate-900/60 border border-slate-800 overflow-hidden">
-          <button
-            onClick={() => toggleAccordion('overlap_tool')}
-            className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between text-left text-sm font-semibold text-slate-200 hover:text-white hover:bg-slate-800/40 transition-colors cursor-pointer"
-            aria-expanded={openAccordion === 'overlap_tool'}
-          >
-            <div className="flex items-center gap-2.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" />
-              <span>Deep Technical Tool: 1-Latent Overlap &amp; Cosine Blending Visualizer</span>
-            </div>
-            <ChevronDown
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                openAccordion === 'overlap_tool' ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {openAccordion === 'overlap_tool' && (
-            <div className="p-4 sm:p-6 border-t border-slate-800/60 bg-slate-950/80">
-              <ChunkOverlapVisualizer currentPreset={currentPreset} />
-            </div>
-          )}
         </div>
       </div>
     </section>
