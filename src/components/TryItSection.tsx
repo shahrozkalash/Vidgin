@@ -7,12 +7,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   RotateCcw,
-  Code2,
-  Terminal,
   CheckCircle2,
-  ChevronDown,
-  Copy,
-  Check,
   Tag,
   Columns,
 } from 'lucide-react';
@@ -41,14 +36,6 @@ export const TryItSection: React.FC<TryItSectionProps> = ({
   const [isCompareMode, setIsCompareMode] = useState<boolean>(false);
   const [compareChoice, setCompareChoice] = useState<'A' | 'B' | 'neither' | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [copiedCode, setCopiedCode] = useState<boolean>(false);
-
-  // Accordion state
-  const [openAccordion, setOpenAccordion] = useState<string | null>(null);
-
-  const toggleAccordion = (id: string) => {
-    setOpenAccordion((prev) => (prev === id ? null : id));
-  };
 
   const samplePrompts = [
     'A glowing cyan creature gliding gracefully through misty indigo mountain water at twilight',
@@ -102,32 +89,6 @@ export const TryItSection: React.FC<TryItSectionProps> = ({
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
     );
   };
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(pythonSnippet);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
-  };
-
-  const pythonSnippet = `# Run Vidgen 30-Second Generation in Python
-from vidgen.config import LongVideoConfig, AttentionConfig, TINY_PRESET
-from vidgen.attention import DecoupledDiTModel
-from vidgen.memory import MemoryStore
-
-# 1. Initialize configuration with Decoupled Attention
-config = LongVideoConfig(
-    duration_seconds=30.0,
-    fps=16.0,
-    preset=TINY_PRESET,
-    attention=AttentionConfig(attention_mode="decoupled", time_window=16),
-)
-
-# 2. Query episodic memory for character consistency
-memory = MemoryStore(index_dir="./vidgen_memory")
-refs = memory.search_entries(query="${prompt.slice(0, 30)}", top_k=2)
-
-print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags...")
-`;
 
   return (
     <section id="try_it" className="scroll-mt-20 space-y-6">
@@ -389,89 +350,6 @@ print(f"Synthesizing {config.duration_seconds}s with {len(refs)} reference tags.
         </div>
       </div>
 
-      {/* Accordions for Deep Technical Details (Python Integration & GPU Commands) */}
-      <div className="space-y-3 pt-2">
-        {/* Accordion 1: Python Library Code */}
-        <div className="rounded-2xl bg-slate-900/60 border border-slate-800 overflow-hidden">
-          <button
-            onClick={() => toggleAccordion('python')}
-            className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between text-left text-sm font-semibold text-slate-200 hover:text-white hover:bg-slate-800/40 transition-colors"
-            aria-expanded={openAccordion === 'python'}
-          >
-            <div className="flex items-center gap-2.5">
-              <Code2 className="w-4 h-4 text-cyan-400" />
-              <span>Deep Technical Specs: Python Library Integration Code</span>
-            </div>
-            <ChevronDown
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                openAccordion === 'python' ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {openAccordion === 'python' && (
-            <div className="p-4 sm:p-5 border-t border-slate-800/60 bg-slate-950 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-400 font-mono">vidgen_generate.py</span>
-                <button
-                  onClick={handleCopyCode}
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium flex items-center gap-1.5 transition-colors"
-                >
-                  {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedCode ? 'Copied!' : 'Copy Code'}</span>
-                </button>
-              </div>
-              <pre className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 overflow-x-auto text-xs font-mono text-slate-200 leading-relaxed">
-                <code>{pythonSnippet}</code>
-              </pre>
-            </div>
-          )}
-        </div>
-
-        {/* Accordion 2: Colab & GPU Training Commands */}
-        <div className="rounded-2xl bg-slate-900/60 border border-slate-800 overflow-hidden">
-          <button
-            onClick={() => toggleAccordion('commands')}
-            className="w-full min-h-[48px] px-5 py-3.5 flex items-center justify-between text-left text-sm font-semibold text-slate-200 hover:text-white hover:bg-slate-800/40 transition-colors"
-            aria-expanded={openAccordion === 'commands'}
-          >
-            <div className="flex items-center gap-2.5">
-              <Terminal className="w-4 h-4 text-emerald-400" />
-              <span>Deep Technical Specs: Colab &amp; GPU Execution Commands</span>
-            </div>
-            <ChevronDown
-              className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                openAccordion === 'commands' ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {openAccordion === 'commands' && (
-            <div className="p-4 sm:p-5 border-t border-slate-800/60 bg-slate-950 space-y-3 text-xs font-mono text-slate-300">
-              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
-                <span className="text-slate-400 block font-sans font-semibold">1. Run Full CPU Test Suite (34 passing tests)</span>
-                <code className="text-cyan-300 block bg-slate-950 p-2 rounded border border-slate-800">
-                  python3 -m unittest discover -s tests
-                </code>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
-                <span className="text-slate-400 block font-sans font-semibold">2. Run Attention &amp; Memory Scaling Ablations</span>
-                <code className="text-cyan-300 block bg-slate-950 p-2 rounded border border-slate-800">
-                  python3 scripts/ablate_decoupled_attention.py
-                </code>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
-                <span className="text-slate-400 block font-sans font-semibold">3. Run Part 0-13 CPU Acceptance Audit</span>
-                <code className="text-cyan-300 block bg-slate-950 p-2 rounded border border-slate-800">
-                  python3 scripts/run_cpu_audit_tests.py
-                </code>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
     </section>
   );
 };
