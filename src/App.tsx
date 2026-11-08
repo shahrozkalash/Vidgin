@@ -1,16 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { PresetKey } from './types/vidgen';
 import { Navbar } from './components/Navbar';
 import { FilmstripHero } from './components/FilmstripHero';
-import { LongVideoSection } from './components/LongVideoSection';
 import { TryItSection } from './components/TryItSection';
 import { Footer } from './components/Footer';
 import { EditorView } from './components/editor/EditorView';
 import { Film, SlidersHorizontal } from 'lucide-react';
 
 export default function App() {
-  const [currentPreset, setCurrentPreset] = useState<PresetKey>('vidgen14b');
-  const [activeSection, setActiveSection] = useState<string>('overview');
 
   // Determine initial view: check URL query parameter ?view=editor | ?view=overview
   const getInitialView = (): 'editor' | 'overview' => {
@@ -51,7 +47,6 @@ export default function App() {
   };
 
   const scrollToSection = (sectionId: string) => {
-    setActiveSection(sectionId);
     const el = document.getElementById(sectionId);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth' });
@@ -65,40 +60,30 @@ export default function App() {
 
   // Existing mobile/tablet & classic layout (completely unchanged)
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200 relative">
+    <div className="min-h-screen bg-[#f3f8ec] text-slate-800 flex flex-col font-sans selection:bg-green-200 selection:text-green-900 relative">
       {/* Discreet floating View Toggle to switch to Desktop Editor anytime */}
       <div className="fixed bottom-4 right-4 z-50 shadow-xl">
         <button
           onClick={() => handleToggleView('editor')}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/90 hover:bg-slate-800 text-slate-200 border border-cyan-500/60 shadow-lg shadow-cyan-950/50 backdrop-blur-md text-xs font-medium transition-all hover:scale-105 active:scale-95"
+          className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-white/90 hover:bg-white text-slate-700 border border-green-600/40 shadow-lg backdrop-blur-md text-xs font-medium transition-all hover:scale-105 active:scale-95"
           title="Switch to Desktop Timeline Video Editor"
         >
-          <Film className="w-3.5 h-3.5 text-cyan-400" />
+          <Film className="w-3.5 h-3.5 text-green-700" />
           <span>Switch to Editor</span>
         </button>
       </div>
 
-      {/* Streamlined Header */}
-      <Navbar
-        activeSection={activeSection}
-        onSectionChange={scrollToSection}
-      />
+      {/* Simple Header */}
+      <Navbar />
 
-      {/* Hero with Creative Animated Filmstrip / Timeline */}
+      {/* Simple Hero */}
       <FilmstripHero
         onTryItClick={() => scrollToSection('try_it')}
       />
 
-      {/* Main Sections in Centered Container (Max ~1100px) */}
-      <main className="flex-1 max-w-[1100px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-16 sm:space-y-24">
-        {/* Section 1: Long Video (30 Seconds) */}
-        <LongVideoSection />
-
-        {/* Section 2: Try it */}
-        <TryItSection
-          currentPreset={currentPreset}
-          onPresetChange={setCurrentPreset}
-        />
+      {/* One simple card */}
+      <main className="flex-1 w-full py-2 sm:py-4">
+        <TryItSection />
       </main>
 
       {/* Minimal Footer */}
