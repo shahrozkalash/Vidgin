@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Play, RotateCcw, CheckCircle2, Video, ArrowUp, Sliders } from 'lucide-react';
+import { CheckCircle2, Video, ArrowUp, Sliders } from 'lucide-react';
 
 const SAMPLES = [
   {
@@ -17,17 +17,19 @@ const SAMPLES = [
 ];
 
 export const TryItSection: React.FC = () => {
-  const [prompt, setPrompt] = useState<string>(
-    'A glowing cyan creature gliding gracefully through misty indigo mountain water at twilight, cinematic 4k'
-  );
+  const [prompt, setPrompt] = useState<string>('');
   const [duration, setDuration] = useState<number>(30); // 5 to 60s
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [genProgress, setGenProgress] = useState<number>(0);
   const [activeChunkStep, setActiveChunkStep] = useState<number>(0);
-  const [hasGenerated, setHasGenerated] = useState<boolean>(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const totalChunks = Math.ceil(duration / 5);
+  // The exchange the user actually sent — nothing shows until they send one.
+  const [sentPrompt, setSentPrompt] = useState<string | null>(null);
+  const [sentDuration, setSentDuration] = useState<number>(30);
+  const [isDone, setIsDone] = useState<boolean>(false);
+
+  const totalChunks = Math.ceil(sentDuration / 5);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -38,11 +40,16 @@ export const TryItSection: React.FC = () => {
 
   const handleGenerate = () => {
     if (isGenerating || !prompt.trim()) return;
+    const sentText = prompt.trim();
+    const sentSecs = duration;
+    setSentPrompt(sentText);
+    setSentDuration(sentSecs);
+    setIsDone(false);
     setIsGenerating(true);
     setGenProgress(0);
     setActiveChunkStep(0);
 
-    const chunks = Math.ceil(duration / 5);
+    const chunks = Math.ceil(sentSecs / 5);
     const intervalMs = 300;
     let step = 0;
 
@@ -55,8 +62,8 @@ export const TryItSection: React.FC = () => {
       if (step >= 10) {
         clearInterval(timer);
         setIsGenerating(false);
-        setHasGenerated(true);
-        showToast(`Your ${duration}s video is ready`);
+        setIsDone(true);
+        showToast(`Your ${sentSecs}s video is ready`);
       }
     }, intervalMs);
   };
@@ -85,62 +92,55 @@ export const TryItSection: React.FC = () => {
         </div>
 
         <div className="px-5 sm:px-6 py-5 space-y-5">
-          {/* User message bubble */}
-          <div className="flex justify-end">
-            <div className="max-w-[85%] bg-green-600 text-white rounded-3xl rounded-br-lg px-4 py-3 text-[15px] leading-relaxed">
-              {prompt.trim() ? prompt : '…'}
-            </div>
-          </div>
+          {/* Empty state — shown until the user sends a prompt */}
+          {sentPrompt === null && (
+            <p className="text-center text-slate-400 text-[15px] py-4">
+              Type what you want to see below, and Vidgin will make it.
+            </p>
+          )}
 
-          {/* Vidgin answer bubble */}
-          <div className="flex justify-start">
-            <div className="max-w-[94%] w-full bg-slate-50 border border-slate-100 rounded-3xl rounded-bl-lg px-4 py-4 space-y-3">
-              <p className="text-[15px] text-slate-700 font-medium">
-                {isGenerating
-                  ? `Making your video — part ${activeChunkStep + 1} of ${totalChunks}…`
-                  : `Here's your ${duration}-second video:`}
-              </p>
-
-              {/* Video preview */}
-              <div className="relative aspect-video rounded-2xl bg-gradient-to-tr from-green-100 via-emerald-50 to-teal-100 border border-green-100 overflow-hidden flex items-center justify-center">
-                <div className="w-14 h-14 rounded-full bg-white shadow-md flex items-center justify-center">
-                  <Play className="w-6 h-6 text-green-700 ml-0.5" />
-                </div>
-                <span className="absolute bottom-2 left-2 text-[11px] font-medium bg-white/85 px-2 py-0.5 rounded-full text-slate-600">
-                  {duration}s video
-                </span>
+          {/* The user's sent prompt — appears only after they send it */}
+          {sentPrompt !== null && (
+            <div className="flex justify-end">
+              <div className="max-w-[85%] bg-green-600 text-white rounded-3xl rounded-br-lg px-4 py-3 text-[15px] leading-relaxed">
+                {sentPrompt}
               </div>
-
-              {/* Progress bar during generation */}
-              {isGenerating && (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs text-slate-500">
-                    <span>Making it, step by step</span>
-                    <span className="text-green-700 font-bold">{genProgress}%</span>
-                  </div>
-                  <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-green-500 transition-all duration-200"
-                      style={{ width: `${genProgress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Again */}
-              {!isGenerating && hasGenerated && (
-                <div>
-                  <button
-                    onClick={handleGenerate}
-                    className="min-h-[40px] px-4 py-2 rounded-full bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-100 flex items-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Again</span>
-                  </button>
-                </div>
-              )}
             </div>
-          </div>
+          )}
+
+          {/* Vidgin's reply — progress while making, simple done line after */}
+          {sentPrompt !== null && (
+            <div className="flex justify-start">
+              <div className="max-w-[94%] w-full bg-slate-50 border border-slate-100 rounded-3xl rounded-bl-lg px-4 py-4 space-y-3">
+                {isGenerating ? (
+                  <>
+                    <p className="text-[15px] text-slate-700 font-medium">
+                      {`Making your video — part ${activeChunkStep + 1} of ${totalChunks}…`}
+                    </p>
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>Making it, step by step</span>
+                        <span className="text-green-700 font-bold">{genProgress}%</span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-green-500 transition-all duration-200"
+                          style={{ width: `${genProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  isDone && (
+                    <p className="text-[15px] text-slate-700 font-medium flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
+                      <span>{`Done — your ${sentDuration}-second video is ready.`}</span>
+                    </p>
+                  )
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Choose duration */}
           <div className="space-y-2.5 pt-1">
