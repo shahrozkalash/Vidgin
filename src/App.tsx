@@ -6,7 +6,7 @@ import { Footer } from './components/Footer';
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-[#f3f8ec] text-slate-800 flex flex-col font-sans selection:bg-green-200 selection:text-green-900 relative">
+    <div className="min-h-screen bg-[#f6f1fb] text-slate-800 flex flex-col font-sans selection:bg-violet-200 selection:text-violet-900 relative">
       {/* Simple Header */}
       <Navbar />
 

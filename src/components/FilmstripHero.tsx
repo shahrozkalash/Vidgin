@@ -7,7 +7,7 @@ export const FilmstripHero: React.FC = () => {
         <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.05]">
           Describe it.
           <br />
-          <span className="text-green-700">Vidgen films it.</span>
+          <span className="bg-gradient-to-r from-violet-600 via-fuchsia-500 to-amber-400 bg-clip-text text-transparent">Vidgen films it.</span>
         </h1>
 
         <p className="text-lg sm:text-xl text-slate-600 max-w-xl mx-auto leading-relaxed">
