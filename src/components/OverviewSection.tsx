@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Layers, HardDrive, Scissors, Sparkles, ChevronDown, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { ChevronDown, CheckCircle2, ShieldCheck } from 'lucide-react';
 
 export const OverviewSection: React.FC = () => {
   const [openAccordion, setOpenAccordion] = useState<string | null>(null);
@@ -8,36 +8,6 @@ export const OverviewSection: React.FC = () => {
     setOpenAccordion((prev) => (prev === id ? null : id));
   };
 
-  const coreConcepts = [
-    {
-      icon: Layers,
-      title: '5-Second Causal Chunks',
-      badge: '81 frames @ 16 FPS',
-      desc: 'Instead of trying to generate 30 seconds at once—which explodes memory—videos are synthesized forward in 5-second increments.',
-      color: 'text-indigo-400 bg-indigo-950/60 border-indigo-800/60',
-    },
-    {
-      icon: HardDrive,
-      title: 'Flat O(1) Memory',
-      badge: 'Constant ~18.4 GB',
-      desc: 'Generation stays strictly within memory budget. Whether producing 5 seconds or 5 minutes, VRAM never climbs or crashes with OOM.',
-      color: 'text-cyan-400 bg-cyan-950/60 border-cyan-800/60',
-    },
-    {
-      icon: Scissors,
-      title: 'Seamless Seam Blending',
-      badge: '1-Latent Cosine',
-      desc: 'A 1-frame boundary overlap smoothly fades adjacent chunks together using cosine weighting, eliminating visible jump cuts.',
-      color: 'text-emerald-400 bg-emerald-950/60 border-emerald-800/60',
-    },
-    {
-      icon: Sparkles,
-      title: 'Decoupled Attention',
-      badge: 'Spatial + Temporal',
-      desc: 'Separates fine spatial details from time-based motion. Slashes attention compute by over 80% while retaining character consistency.',
-      color: 'text-sky-400 bg-sky-950/60 border-sky-800/60',
-    },
-  ];
 
   return (
     <section id="overview" className="scroll-mt-20 space-y-6">
@@ -49,36 +19,6 @@ export const OverviewSection: React.FC = () => {
         <p className="mt-1 text-base text-slate-300">
           How Vidgen delivers long-video synthesis without hardware bottlenecks.
         </p>
-      </div>
-
-      {/* 4 Core Concept Cards (Mobile: 1 col, Tablet: 2 col, Desktop: 4 col) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {coreConcepts.map((item, idx) => {
-          const Icon = item.icon;
-          return (
-            <div
-              key={idx}
-              className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800/90 flex flex-col justify-between space-y-3 hover:border-slate-700 transition-colors"
-            >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${item.color}`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
-                  <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
-                    {item.badge}
-                  </span>
-                </div>
-                <h3 className="text-lg font-semibold text-white">
-                  {item.title}
-                </h3>
-                <p className="text-base text-slate-300 leading-relaxed">
-                  {item.desc}
-                </p>
-              </div>
-            </div>
-          );
-        })}
       </div>
 
       {/* Accordion Container for Deep Technical Details */}
