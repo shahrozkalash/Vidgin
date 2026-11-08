@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Video, ArrowUp, Sliders } from 'lucide-react';
+import { CheckCircle2, ArrowUp, Sliders } from 'lucide-react';
 
 const SAMPLES = [
   {
@@ -80,17 +80,6 @@ export const TryItSection: React.FC = () => {
 
       {/* Chat-style card */}
       <div className="max-w-[720px] mx-auto bg-white rounded-[28px] shadow-xl shadow-green-900/5 border border-green-900/10 overflow-hidden">
-        {/* Card header */}
-        <div className="flex items-center gap-3 px-5 sm:px-6 py-4 border-b border-slate-100">
-          <div className="w-10 h-10 rounded-2xl bg-green-600 flex items-center justify-center shrink-0">
-            <Video className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <div className="font-bold text-slate-900 text-lg leading-tight">Vidgin</div>
-            <div className="text-sm text-slate-500 leading-tight">Turns words into video</div>
-          </div>
-        </div>
-
         <div className="px-5 sm:px-6 py-5 space-y-5">
           {/* Empty state — shown until the user sends a prompt */}
           {sentPrompt === null && (

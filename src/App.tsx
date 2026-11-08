@@ -46,13 +46,6 @@ export default function App() {
     window.history.replaceState({}, '', url.toString());
   };
 
-  const scrollToSection = (sectionId: string) => {
-    const el = document.getElementById(sectionId);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
-
   // If in Desktop Editor mode
   if (currentView === 'editor') {
     return <EditorView onSwitchToOverview={() => handleToggleView('overview')} />;
@@ -77,9 +70,7 @@ export default function App() {
       <Navbar />
 
       {/* Simple Hero */}
-      <FilmstripHero
-        onTryItClick={() => scrollToSection('try_it')}
-      />
+      <FilmstripHero />
 
       {/* One simple card */}
       <main className="flex-1 w-full py-2 sm:py-4">
