@@ -1,32 +1,11 @@
 import React, { useState } from 'react';
-import { Film, Sliders } from 'lucide-react';
+import { Sliders } from 'lucide-react';
 
 export const LongVideoSection: React.FC = () => {
   const [targetDuration, setTargetDuration] = useState<number>(30); // 5 to 60s
 
   return (
     <section id="long_video" className="scroll-mt-20 space-y-6">
-      {/* Section Header with 30-Second Video badge moved here from Navbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 inline-flex items-center gap-1.5">
-              <Film className="w-3.5 h-3.5" />
-              <span>30-Second Video (481f, 16 FPS)</span>
-            </span>
-            <span className="text-xs text-slate-400 font-mono">
-              Part 13 Verified
-            </span>
-          </div>
-          <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-            Long Video Architecture
-          </h2>
-          <p className="mt-1 text-base text-slate-300">
-            How Vidgen generates continuous 30-second clips with constant O(1) memory.
-          </p>
-        </div>
-      </div>
-
       {/* Interactive Duration Card */}
       <div className="p-5 sm:p-6 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-6 shadow-lg shadow-slate-950/40">
         {/* Interactive Duration Scrubber */}

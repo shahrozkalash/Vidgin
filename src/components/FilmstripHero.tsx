@@ -1,13 +1,11 @@
 import React from 'react';
-import { Sparkles, ChevronRight } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 
 interface FilmstripHeroProps {
-  onExploreClick: () => void;
   onTryItClick: () => void;
 }
 
 export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
-  onExploreClick,
   onTryItClick,
 }) => {
   return (
@@ -47,13 +45,6 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
             >
               <Sparkles className="w-4 h-4 text-slate-950" />
               <span>Try Generator</span>
-            </button>
-            <button
-              onClick={onExploreClick}
-              className="min-h-[44px] px-5 py-2.5 rounded-xl font-medium text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 active:scale-[0.98] transition-all flex items-center gap-2 text-base cursor-pointer"
-            >
-              <span>Explore 30s Architecture</span>
-              <ChevronRight className="w-4 h-4 text-slate-400" />
             </button>
           </div>
         </div>

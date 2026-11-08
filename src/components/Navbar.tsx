@@ -13,7 +13,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [menuOpen, setMenuOpen] = useState(false);
 
   const sections = [
-    { id: 'overview', label: 'Overview', desc: 'Continuous diffusion architecture' },
     { id: 'long_video', label: 'Long video (30s)', desc: 'Flat O(1) memory & seam blending' },
     { id: 'try_it', label: 'Try it', desc: 'Simulate generation & feedback' },
   ];
