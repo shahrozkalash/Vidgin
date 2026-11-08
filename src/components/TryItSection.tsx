@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { CheckCircle2, ArrowUp, Sliders } from 'lucide-react';
-import { addProject } from '../lib/projects';
+import React, { useEffect, useState } from 'react';
+import { CheckCircle2, ArrowUp, Sliders, Download } from 'lucide-react';
+import { addProject, subscribeProjectReuse } from '../lib/projects';
 
 export const TryItSection: React.FC = () => {
   const [prompt, setPrompt] = useState<string>('');
@@ -16,6 +16,43 @@ export const TryItSection: React.FC = () => {
   const [isDone, setIsDone] = useState<boolean>(false);
 
   const totalChunks = Math.ceil(sentDuration / 5);
+
+  // "Use this project again" from the Projects menu loads it back here.
+  useEffect(
+    () =>
+      subscribeProjectReuse((p) => {
+        if (isGenerating) return;
+        setPrompt(p.prompt);
+        setDuration(Math.min(60, Math.max(5, p.duration)));
+        document.getElementById('try_it')?.scrollIntoView({ behavior: 'smooth' });
+        setTimeout(() => document.getElementById('prompt-input')?.focus(), 350);
+      }),
+    [isGenerating]
+  );
+
+  const handleDownload = () => {
+    if (!sentPrompt) return;
+    const lines = [
+      'Vidgin project',
+      '',
+      `Prompt: ${sentPrompt}`,
+      `Duration: ${sentDuration} seconds`,
+      `Made: ${new Date().toLocaleString()}`,
+    ].join('\n');
+    const blob = new Blob([lines], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const slug =
+      sentPrompt
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'project';
+    a.href = url;
+    a.download = `vidgin-${slug}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -108,10 +145,19 @@ export const TryItSection: React.FC = () => {
                   </>
                 ) : (
                   isDone && (
-                    <p className="text-[15px] text-slate-700 font-medium flex items-center gap-2">
-                      <CheckCircle2 className="w-5 h-5 text-violet-600 shrink-0" />
-                      <span>{`Done — your ${sentDuration}-second video is ready.`}</span>
-                    </p>
+                    <div className="space-y-3">
+                      <p className="text-[15px] text-slate-700 font-medium flex items-center gap-2">
+                        <CheckCircle2 className="w-5 h-5 text-violet-600 shrink-0" />
+                        <span>{`Done — your ${sentDuration}-second video is ready.`}</span>
+                      </p>
+                      <button
+                        onClick={handleDownload}
+                        className="flex items-center gap-2 px-4 py-2 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold shadow-sm transition-colors min-h-[40px] cursor-pointer"
+                      >
+                        <Download className="w-4 h-4" />
+                        Download
+                      </button>
+                    </div>
                   )
                 )}
               </div>

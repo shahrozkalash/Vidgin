@@ -42,3 +42,17 @@ export function subscribeProjects(onChange: () => void): () => void {
     window.removeEventListener('storage', handler);
   };
 }
+
+// "Use this project again": the menu asks, the generator card listens and
+// loads the project's prompt + duration back into the box.
+const REUSE_EVENT = 'vidgen-project-reuse';
+
+export function requestReuseProject(project: Project): void {
+  window.dispatchEvent(new CustomEvent<Project>(REUSE_EVENT, { detail: project }));
+}
+
+export function subscribeProjectReuse(onReuse: (project: Project) => void): () => void {
+  const handler = (e: Event) => onReuse((e as CustomEvent<Project>).detail);
+  window.addEventListener(REUSE_EVENT, handler);
+  return () => window.removeEventListener(REUSE_EVENT, handler);
+}
