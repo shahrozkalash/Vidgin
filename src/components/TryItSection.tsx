@@ -54,7 +54,7 @@ export const TryItSection: React.FC = () => {
   };
 
   return (
-    <section id="try_it" className="scroll-mt-20 px-4 pb-4">
+    <section id="try_it" className="scroll-mt-20 px-4 pb-4 flex-1 flex flex-col w-full">
       {/* Toast notification */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-full bg-slate-900 text-white shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
@@ -64,8 +64,8 @@ export const TryItSection: React.FC = () => {
       )}
 
       {/* Chat-style card */}
-      <div className="max-w-[720px] mx-auto bg-white rounded-[28px] shadow-xl shadow-green-900/5 border border-green-900/10 overflow-hidden">
-        <div className="px-5 sm:px-6 py-5 space-y-5">
+      <div className="max-w-[720px] w-full mx-auto bg-white rounded-[28px] shadow-xl shadow-green-900/5 border border-green-900/10 overflow-hidden flex-1 flex flex-col">
+        <div className="px-5 sm:px-6 py-5 space-y-5 flex-1">
           {/* Empty state — shown until the user sends a prompt */}
           {sentPrompt === null && (
             <p className="text-center text-slate-400 text-[15px] py-4">
