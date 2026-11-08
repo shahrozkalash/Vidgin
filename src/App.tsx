@@ -3,7 +3,6 @@ import { PresetKey } from './types/vidgen';
 import { Navbar } from './components/Navbar';
 import { FilmstripHero } from './components/FilmstripHero';
 import { OverviewSection } from './components/OverviewSection';
-import { PresetsSection } from './components/PresetsSection';
 import { LongVideoSection } from './components/LongVideoSection';
 import { TryItSection } from './components/TryItSection';
 import { Footer } from './components/Footer';
@@ -97,16 +96,10 @@ export default function App() {
         {/* Section 1: Overview */}
         <OverviewSection />
 
-        {/* Section 2: Presets */}
-        <PresetsSection
-          currentPreset={currentPreset}
-          onPresetChange={setCurrentPreset}
-        />
-
-        {/* Section 3: Long Video (30 Seconds) */}
+        {/* Section 2: Long Video (30 Seconds) */}
         <LongVideoSection currentPreset={currentPreset} />
 
-        {/* Section 4: Try it */}
+        {/* Section 3: Try it */}
         <TryItSection
           currentPreset={currentPreset}
           onPresetChange={setCurrentPreset}
