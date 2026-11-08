@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CheckCircle2, ArrowUp, Sliders } from 'lucide-react';
+import { addProject } from '../lib/projects';
 
 export const TryItSection: React.FC = () => {
   const [prompt, setPrompt] = useState<string>('');
@@ -48,6 +49,7 @@ export const TryItSection: React.FC = () => {
         clearInterval(timer);
         setIsGenerating(false);
         setIsDone(true);
+        addProject(sentText, sentSecs);
         showToast(`Your ${sentSecs}s video is ready`);
       }
     }, intervalMs);
