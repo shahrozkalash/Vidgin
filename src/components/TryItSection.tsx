@@ -1,21 +1,6 @@
 import React, { useState } from 'react';
 import { CheckCircle2, ArrowUp, Sliders } from 'lucide-react';
 
-const SAMPLES = [
-  {
-    label: '💡 Glowing creature',
-    text: 'A glowing cyan creature gliding gracefully through misty indigo mountain water at twilight',
-  },
-  {
-    label: '💡 Holographic clock',
-    text: 'Futuristic holographic clock turning smoothly over dark reflective grid terrain',
-  },
-  {
-    label: '💡 Neon city flight',
-    text: 'Cinematic aerial drone flight sweeping past rain-washed neon skyscraper rooftops',
-  },
-];
-
 export const TryItSection: React.FC = () => {
   const [prompt, setPrompt] = useState<string>('');
   const [duration, setDuration] = useState<number>(30); // 5 to 60s
@@ -167,26 +152,6 @@ export const TryItSection: React.FC = () => {
               onChange={(e) => setDuration(Number(e.target.value))}
               className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-green-600"
             />
-
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>5s (1 chunk)</span>
-              <span>15s (3 chunks)</span>
-              <span>30s (6 chunks)</span>
-              <span>60s (12 chunks)</span>
-            </div>
-          </div>
-
-          {/* Idea chips */}
-          <div className="flex flex-wrap gap-2">
-            {SAMPLES.map((sample) => (
-              <button
-                key={sample.label}
-                onClick={() => setPrompt(sample.text)}
-                className="min-h-[40px] px-3.5 py-2 rounded-full bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
-              >
-                {sample.label}
-              </button>
-            ))}
           </div>
         </div>
 
