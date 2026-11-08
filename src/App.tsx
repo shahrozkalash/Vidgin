@@ -73,7 +73,7 @@ export default function App() {
       <FilmstripHero />
 
       {/* One simple card */}
-      <main className="flex-1 w-full py-2 sm:py-4">
+      <main className="w-full py-2 sm:py-4">
         <TryItSection />
       </main>
 
