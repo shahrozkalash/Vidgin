@@ -1,12 +1,5 @@
 import React from 'react';
-import {
-  Sparkles,
-  ChevronRight,
-  HardDrive,
-  Film,
-  Scissors,
-  Cpu,
-} from 'lucide-react';
+import { Sparkles, ChevronRight } from 'lucide-react';
 
 interface FilmstripHeroProps {
   onExploreClick: () => void;
@@ -17,33 +10,6 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
   onExploreClick,
   onTryItClick,
 }) => {
-  const statTiles = [
-    {
-      icon: Film,
-      value: '30 Seconds',
-      label: 'Six 5-second chunks',
-      detail: '481 raw frames at 16 FPS',
-    },
-    {
-      icon: HardDrive,
-      value: 'Flat Memory',
-      label: 'Constant ~18.4 GB',
-      detail: 'No OOM crashes over time',
-    },
-    {
-      icon: Scissors,
-      value: 'Zero Jump Cuts',
-      label: 'Smooth cosine blend',
-      detail: '1-latent boundary overlap',
-    },
-    {
-      icon: Cpu,
-      value: 'Decoupled DiT',
-      label: 'Over 80% compute saved',
-      detail: 'Split space & time attention',
-    },
-  ];
-
   return (
     <section className="relative overflow-hidden pt-6 pb-10 sm:pt-12 sm:pb-16 text-slate-100">
       {/* Background ambient accent glow */}
@@ -92,29 +58,6 @@ export const FilmstripHero: React.FC<FilmstripHeroProps> = ({
           </div>
         </div>
 
-        {/* Small Stat Tiles */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          {statTiles.map((tile, idx) => {
-            const Icon = tile.icon;
-            return (
-              <div
-                key={idx}
-                className="p-3.5 sm:p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between space-y-1 hover:border-slate-700/80 transition-colors"
-              >
-                <div className="flex items-center gap-2 text-slate-400 mb-1">
-                  <Icon className="w-4 h-4 text-cyan-400 shrink-0" />
-                  <span className="text-xs font-medium text-slate-400 truncate">{tile.label}</span>
-                </div>
-                <div className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                  {tile.value}
-                </div>
-                <div className="text-[11px] text-slate-400 truncate">
-                  {tile.detail}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </div>
     </section>
   );
