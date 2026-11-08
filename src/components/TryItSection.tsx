@@ -116,7 +116,10 @@ export const TryItSection: React.FC = () => {
             </div>
           )}
 
-          {/* Choose duration */}
+        </div>
+
+        {/* Choose duration — right above the message box */}
+        <div className="px-5 sm:px-6 pb-4">
           <div className="space-y-2.5 pt-1">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <label htmlFor="duration-slider" className="text-[15px] font-semibold text-slate-700 flex items-center gap-2">
