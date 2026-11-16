@@ -110,6 +110,22 @@ def center_crop_square(frame: np.ndarray) -> np.ndarray:
     return frame[y0 : y0 + s, x0 : x0 + s]
 
 
+def center_crop_aspect(frame: np.ndarray, target_w: int,
+                       target_h: int) -> np.ndarray:
+    """Largest centered crop of frame with aspect target_w:target_h.
+
+    For a square target this is exactly center_crop_square.
+    """
+    h, w = frame.shape[:2]
+    ta = target_w / target_h
+    if w / h > ta:
+        ch, cw = h, max(1, int(h * ta))
+    else:
+        cw, ch = w, max(1, int(w / ta))
+    y0, x0 = (h - ch) // 2, (w - cw) // 2
+    return frame[y0 : y0 + ch, x0 : x0 + cw]
+
+
 def energy_crop_offset(mean_frame: np.ndarray) -> tuple[int, int]:
     """Top-left offset of the square crop with the most visual energy.
 
@@ -161,16 +177,22 @@ def crop_square(frame: np.ndarray, offset: tuple[int, int]) -> np.ndarray:
     return frame[y0 : y0 + s, x0 : x0 + s]
 
 
-def resize_nearest(frame: np.ndarray, size: int) -> np.ndarray:
-    """Nearest-neighbor resize (S, S, 3) -> (size, size, 3). Pure numpy."""
-    s = frame.shape[0]
-    ys = (np.linspace(0, s, size, endpoint=False)).astype(int)
-    xs = (np.linspace(0, s, size, endpoint=False)).astype(int)
+def resize_nearest(frame: np.ndarray, size: int,
+                   size_wh: tuple[int, int] | None = None) -> np.ndarray:
+    """Nearest-neighbor resize -> (size, size, 3), or (H, W, 3) for size_wh.
+
+    Pure numpy. ``size_wh`` is (width, height) and overrides ``size``.
+    """
+    tw, th = size_wh if size_wh is not None else (size, size)
+    sh, sw = frame.shape[:2]
+    ys = (np.linspace(0, sh, th, endpoint=False)).astype(int)
+    xs = (np.linspace(0, sw, tw, endpoint=False)).astype(int)
     return frame[ys[:, None], xs[None, :]]
 
 
-def resize_frame(frame: np.ndarray, size: int, method: str = "area") -> np.ndarray:
-    """Resize a square frame to (size, size, 3) with a quality filter.
+def resize_frame(frame: np.ndarray, size: int, method: str = "area",
+                 size_wh: tuple[int, int] | None = None) -> np.ndarray:
+    """Resize a frame to (size, size, 3), or (H, W, 3) when size_wh=(W, H).
 
     "area" (default): cv2 INTER_AREA when shrinking, INTER_LANCZOS4 when
     growing — the right filters for video prep; falls back to Pillow
@@ -180,31 +202,33 @@ def resize_frame(frame: np.ndarray, size: int, method: str = "area") -> np.ndarr
     of old datasets. Nearest-neighbour was the pre-2026-10-22 default
     and visibly aliases on real footage; it is no longer the default.
     """
-    if frame.shape[0] == size:
+    tw, th = size_wh if size_wh is not None else (size, size)
+    if frame.shape[0] == th and frame.shape[1] == tw:
         return frame
+    growing = th > frame.shape[0] or tw > frame.shape[1]
     if method == "nearest":
-        return resize_nearest(frame, size)
+        return resize_nearest(frame, size, size_wh)
     if method not in ("area", "lanczos"):
         raise ValueError(f"unknown resize method: {method!r}")
     try:
         import cv2  # type: ignore
 
-        if method == "lanczos" or size > frame.shape[0]:
+        if method == "lanczos" or growing:
             interp = cv2.INTER_LANCZOS4
         else:
             interp = cv2.INTER_AREA
-        return cv2.resize(frame, (size, size), interpolation=interp)
+        return cv2.resize(frame, (tw, th), interpolation=interp)
     except ImportError:
         pass
     try:
         from PIL import Image
 
-        filt = Image.LANCZOS if (method == "lanczos" or size > frame.shape[0]) \
+        filt = Image.LANCZOS if (method == "lanczos" or growing) \
             else Image.BOX
         return np.asarray(
-            Image.fromarray(frame).resize((size, size), filt))
+            Image.fromarray(frame).resize((tw, th), filt))
     except ImportError:
-        return resize_nearest(frame, size)
+        return resize_nearest(frame, size, size_wh)
 
 
 def choose_video_file(video_files: list[dict]) -> dict | None:
@@ -473,27 +497,35 @@ def collect_pixabay(api_key: str, queries: list[str], per_query: int) -> list[tu
 def build_clip(frames: np.ndarray, n_frames: int, size: int,
                resize_method: str = "area",
                thresholds: dict | None = None,
-               crop: str = "center"
+               crop: str = "center",
+               out_w: int | None = None,
+               out_h: int | None = None
                ) -> tuple[np.ndarray | None, str | None]:
     """frames (N,H,W,3) uint8 -> (clip (T,H,W,3) uint8, None) or (None, reason).
 
     ``crop``: "center" (historical) or "energy" — one crop window per
     clip, placed on the highest-visual-energy square of the mean frame
-    so edge-standing subjects are not cut off unnecessarily.
+    so edge-standing subjects are not cut off unnecessarily. The output
+    is (size, size) unless out_w/out_h name a rectangle (e.g. 640x360);
+    "energy" picks a square window, so with a rectangular output it
+    falls back to the center aspect crop.
     """
+    tw = out_w if out_w is not None else size
+    th = out_h if out_h is not None else size
     idx = select_frame_indices(len(frames), n_frames)
     if idx is None:
         return None, "too_short"
     window = frames[idx]
-    if crop == "energy":
+    if crop == "energy" and tw == th:
         offset = energy_crop_offset(window.astype(np.float32).mean(axis=0))
         cropped = [crop_square(f, offset) for f in window]
-    elif crop == "center":
-        cropped = [center_crop_square(f) for f in window]
+    elif crop in ("center", "energy"):
+        cropped = [center_crop_aspect(f, tw, th) for f in window]
     else:
         raise ValueError(f"unknown crop mode: {crop!r}")
     out = np.stack(
-        [resize_frame(f, size, resize_method) for f in cropped]
+        [resize_frame(f, size, resize_method, size_wh=(tw, th))
+         for f in cropped]
     ).astype(np.uint8)
     if float(out.mean()) < MEAN_BRIGHTNESS_MIN:
         return None, "too_dark"
@@ -563,7 +595,13 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=17,
                     help="frames per clip (keep (T-1) %% 4 == 0 for the VAE)")
     ap.add_argument("--size", type=int, default=64,
-                    help="square clip size in pixels (multiple of 16)")
+                    help="square clip size in pixels (multiple of 8)")
+    ap.add_argument("--width", type=int, default=None,
+                    help="clip width in pixels (multiple of 8); overrides "
+                         "--size for width, e.g. --width 640 --height 360")
+    ap.add_argument("--height", type=int, default=None,
+                    help="clip height in pixels (multiple of 8); overrides "
+                         "--size for height")
     ap.add_argument("--depth", action="store_true",
                     help="also estimate a 3D depth map per kept clip "
                          "(see --depth-source) and record it in "
@@ -620,8 +658,11 @@ def main() -> None:
 
     if (args.frames - 1) % 4 != 0:
         sys.exit(f"error: --frames must satisfy (T-1) % 4 == 0, got {args.frames}")
-    if args.size % 16 != 0:
-        sys.exit(f"error: --size must be a multiple of 16, got {args.size}")
+    out_w = args.width if args.width is not None else args.size
+    out_h = args.height if args.height is not None else args.size
+    if out_w % 8 != 0 or out_h % 8 != 0:
+        sys.exit(f"error: clip width/height must be multiples of 8, "
+                 f"got {out_w}x{out_h}")
     depth_source_id = None
     if args.depth:
         # Load the estimator now, not at the first kept clip: a missing or
@@ -736,7 +777,8 @@ def main() -> None:
                 clip, reason = build_clip(frames, args.frames, args.size,
                                           resize_method=args.resize,
                                           thresholds=thresholds or None,
-                                          crop=args.crop)
+                                          crop=args.crop,
+                                          out_w=out_w, out_h=out_h)
                 if clip is None:
                     skipped += 1
                     reasons[reason] = reasons.get(reason, 0) + 1  # type: ignore[arg-type]
@@ -798,7 +840,8 @@ def main() -> None:
         "tool": "prepare_clips.py",
         "seed": args.seed,
         "config": {
-            "frames": args.frames, "size": args.size, "depth": args.depth,
+            "frames": args.frames, "size": args.size,
+            "width": out_w, "height": out_h, "depth": args.depth,
             "depth_source": depth_source_id,
             "resize": args.resize, "crop": args.crop,
             "thresholds": thresholds,

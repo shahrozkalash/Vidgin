@@ -1,7 +1,7 @@
 """Part 0: preset configs, frame rule T = 4k+1, save/load roundtrip.
 
 Dimension tables mirror README.md (Track A). All presets define geometry; only
-Tiny is sized to train on CPU. Spatial rule: H, W multiples of 16.
+Tiny is sized to train on CPU. Spatial rule: H, W multiples of 8.
 """
 
 from __future__ import annotations
@@ -96,10 +96,10 @@ class VidgenConfig:
                 f"Frame rule violated: T={self.frames} must satisfy T = 4k+1 "
                 f"(got (T-1) % 4 = {(self.frames - 1) % 4})"
             )
-        if self.height % 16 != 0 or self.width % 16 != 0:
+        if self.height % 8 != 0 or self.width % 8 != 0:
             raise ValueError(
                 f"Spatial rule violated: H={self.height}, W={self.width} "
-                "must be multiples of 16"
+                "must be multiples of 8"
             )
         if self.latent_t != (self.frames - 1) // 4 + 1:
             raise ValueError(
@@ -173,6 +173,20 @@ def _small() -> VidgenConfig:
     )
 
 
+def _small360p() -> VidgenConfig:
+    return VidgenConfig(
+        name="small360p", height=360, width=640, frames=33,
+        # The grown Small VAE (base 64 / latent 32) at 640x360, Sheroz's
+        # resolution-upgrade round (R9, decided 2026-11-16 after the
+        # post-R8 street test failed the clarity gate at 256x256).
+        # Same brain, 3.5x the pixels; latent grid 9 x 45 x 80.
+        latent_channels=32, vae_latent_ch=32, vae_base_ch=64,
+        latent_t=9, latent_h=45, latent_w=80,
+        dit=DiTConfig(layers=16, dim=1024, heads=16, ffn=4096, rope_split=(22, 22, 20)),
+        target_params_m=270.0,
+    )
+
+
 def _vidgen480p() -> VidgenConfig:
     return VidgenConfig(
         name="vidgen480p", height=480, width=832, frames=81,
@@ -207,6 +221,7 @@ def _vidgen14b() -> VidgenConfig:
 PRESETS = {
     "tiny": _tiny,
     "small": _small,
+    "small360p": _small360p,
     "vidgen480p": _vidgen480p,
     "vidgen9b": _vidgen9b,
     "vidgen14b": _vidgen14b,

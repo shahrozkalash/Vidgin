@@ -12,11 +12,11 @@ MEDIA_TYPES = ("video", "image")
 
 
 def validate_bucket(frames: int, height: int, width: int) -> None:
-    """Strict bucket rules: (T-1) % 4 == 0 and H, W multiples of 16."""
+    """Strict bucket rules: (T-1) % 4 == 0 and H, W multiples of 8."""
     if (frames - 1) % 4 != 0:
         raise ValueError(f"Bucket frame rule violated: T={frames}, need (T-1) % 4 == 0")
-    if height % 16 != 0 or width % 16 != 0:
-        raise ValueError(f"Bucket spatial rule violated: {(height, width)} not multiples of 16")
+    if height % 8 != 0 or width % 8 != 0:
+        raise ValueError(f"Bucket spatial rule violated: {(height, width)} not multiples of 8")
 
 
 def nearest_bucket(frames: int, height: int, width: int, buckets: list[tuple]) -> tuple:

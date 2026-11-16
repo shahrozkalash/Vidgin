@@ -46,6 +46,14 @@ def test_vidgen_14b_preset_dimensions():
     assert (cfg.dit.layers, cfg.dit.dim, cfg.dit.heads, cfg.dit.ffn) == (40, 5120, 40, 13824)
 
 
+def test_small360p_preset_dimensions():
+    cfg = get_preset("small360p")
+    assert (cfg.height, cfg.width, cfg.frames) == (360, 640, 33)
+    assert (cfg.latent_t, cfg.latent_h, cfg.latent_w) == (9, 45, 80)
+    assert (cfg.vae_base_ch, cfg.vae_latent_ch) == (64, 32)
+    cfg.validate()
+
+
 def test_frame_rule_validation():
     bad = get_preset("tiny")
     bad.frames = 16
@@ -53,7 +61,7 @@ def test_frame_rule_validation():
         bad.validate()
     bad = get_preset("tiny")
     bad.height = 60
-    with pytest.raises(ValueError, match="multiples of 16"):
+    with pytest.raises(ValueError, match="multiples of 8"):
         bad.validate()
 
 
