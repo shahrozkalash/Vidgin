@@ -54,6 +54,15 @@ def test_small360p_preset_dimensions():
     cfg.validate()
 
 
+def test_portrait720p_preset_dimensions():
+    cfg = get_preset("portrait720p")
+    assert (cfg.height, cfg.width, cfg.frames) == (1280, 720, 33)
+    assert (cfg.latent_t, cfg.latent_h, cfg.latent_w) == (9, 160, 90)
+    assert cfg.num_tokens == 32400
+    assert (cfg.vae_base_ch, cfg.vae_latent_ch) == (192, 64)
+    cfg.validate()
+
+
 def test_frame_rule_validation():
     bad = get_preset("tiny")
     bad.frames = 16

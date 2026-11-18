@@ -187,6 +187,22 @@ def _small360p() -> VidgenConfig:
     )
 
 
+def _portrait720p() -> VidgenConfig:
+    return VidgenConfig(
+        name="portrait720p", height=1280, width=720, frames=33,
+        # R10 round (decided 2026-11-18): the VAE grown to 131M params
+        # (base 192 / latent 64) after R9's clarity verdict ("better but
+        # still blurry"), trained at 720x1280 portrait — Sheroz's robot/
+        # armor pool is portrait. Latent grid 9 x 160 x 90. Init weights:
+        # grown130m transplant from R9 step 40,000 (Drive
+        # vidgin-checkpoints/grown130m_r9_step_040000.pt).
+        latent_channels=64, vae_latent_ch=64, vae_base_ch=192,
+        latent_t=9, latent_h=160, latent_w=90,
+        dit=DiTConfig(layers=16, dim=1024, heads=16, ffn=4096, rope_split=(22, 22, 20)),
+        target_params_m=270.0,
+    )
+
+
 def _vidgen480p() -> VidgenConfig:
     return VidgenConfig(
         name="vidgen480p", height=480, width=832, frames=81,
@@ -222,6 +238,7 @@ PRESETS = {
     "tiny": _tiny,
     "small": _small,
     "small360p": _small360p,
+    "portrait720p": _portrait720p,
     "vidgen480p": _vidgen480p,
     "vidgen9b": _vidgen9b,
     "vidgen14b": _vidgen14b,
