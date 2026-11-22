@@ -74,6 +74,20 @@ class FolderClipDataset(Dataset):
     Indexing follows manifest order exactly (no shuffling here — the
     trainers' BucketSampler handles batching), so the dataset is
     reproducible across runs and checkpoint resumes.
+
+    Optional random spatial crop (``crop``): when set and a stored clip
+    is larger than ``crop`` in H or W, :meth:`__getitem__` returns a
+    random ``crop`` x ``crop`` window (the SAME window for every frame)
+    instead of the full frame — for training a fully convolutional
+    model (the VAE) at resolutions whose full frames do not fit in
+    memory. Crop positions are reproducible: access number k (0-based,
+    counting EVERY :meth:`__getitem__` call on this instance, cropped
+    or not) draws its window from
+    ``np.random.default_rng(seed * 1_000_003 + k)``, so two identically
+    seeded instances replayed in the same access order crop
+    identically. ``crop=None`` (the default) returns the full clip,
+    byte-identical to the historical behaviour. :meth:`get_depth` is
+    unaffected — depth maps are never cropped.
     """
 
     def __init__(
@@ -85,11 +99,18 @@ class FolderClipDataset(Dataset):
         max_clips: int | None = None,
         shard: tuple[int, int] | None = None,
         manifest_name: str = MANIFEST_NAME,
+        crop: int | None = None,
+        seed: int = 0,
     ):
         self.data_dir = data_dir
         self.frames = frames
         self.height = height
         self.width = width
+        if crop is not None and int(crop) <= 0:
+            raise ValueError(f"crop must be a positive int or None, got {crop!r}")
+        self.crop = None if crop is None else int(crop)
+        self.seed = int(seed)
+        self._draw_count = 0
         entries = _load_manifest(data_dir, manifest_name)
         if max_clips is not None:
             entries = entries[: max(0, int(max_clips))]
@@ -120,6 +141,11 @@ class FolderClipDataset(Dataset):
         return len(self.entries)
 
     def __getitem__(self, i: int):
+        # Every access advances the draw counter, cropped or not, so the
+        # crop stream depends only on (seed, access order) — see the
+        # class docstring.
+        draw = self._draw_count
+        self._draw_count += 1
         rec = self.entries[int(i)]
         path = os.path.join(self.data_dir, rec["file"])
         if not os.path.isfile(path):
@@ -137,12 +163,28 @@ class FolderClipDataset(Dataset):
             raise ValueError(
                 f"{path}: expected shape {want} (T,H,W,3), got {clip.shape}"
             )
+        if self.crop is not None and (clip.shape[1] > self.crop
+                                      or clip.shape[2] > self.crop):
+            # Random spatial crop BEFORE the float conversion, one
+            # window for all frames. The RNG is re-derived per access
+            # from (seed, draw) rather than held as mutable state, so
+            # the crop for a given access number never depends on how
+            # many draws happened earlier in the process.
+            rng = np.random.default_rng(self.seed * 1_000_003 + draw)
+            top = (int(rng.integers(0, clip.shape[1] - self.crop + 1))
+                   if clip.shape[1] > self.crop else 0)
+            left = (int(rng.integers(0, clip.shape[2] - self.crop + 1))
+                    if clip.shape[2] > self.crop else 0)
+            clip = clip[:, top:top + min(self.crop, clip.shape[1]),
+                        left:left + min(self.crop, clip.shape[2]), :]
         # uint8 [0,255] -> float32 [-1,1], channel-first, matching Moving MNIST.
         t = torch.from_numpy(clip).permute(3, 0, 1, 2).contiguous().to(torch.float32)
         t = t / 127.5 - 1.0
         caption = str(rec["caption"]).strip() or f"clip {os.path.basename(path)}"
         return t, caption
 
+    # Note: the optional random crop applies to __getitem__ only; this
+    # method always returns the full-frame depth map.
     def get_depth(self, i: int):
         """This clip's 3D depth map as float32 ``[1, T, H, W]`` in ``[0, 1]``
         (larger = nearer), or ``None`` when the manifest entry has no

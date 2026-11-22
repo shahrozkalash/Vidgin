@@ -70,6 +70,7 @@ class VAETrainer:
                  grad_accum: int | None = None,
                  amp: str | None = None,
                  ema_decay: float | None = None,
+                 crop: int | None = None,
                  dist_info: DistInfo | None = None,
                  cfg: VidgenConfig | None = None):
         # Distributed (torchrun) is opt-in: with no torchrun environment
@@ -123,6 +124,13 @@ class VAETrainer:
             # Only when enabled: a default run's train_config stays
             # exactly the historical one.
             self.train_config["ema_decay"] = float(ema_decay)
+        # Random spatial crop for real-clip training (FolderClipDataset):
+        # train on crop x crop windows of the stored frames when the
+        # full frame does not fit in memory. Only when set: a default
+        # run's train_config stays exactly the historical one.
+        self.crop = crop
+        if crop is not None:
+            self.train_config["crop"] = int(crop)
         # EMA of the VAE weights (as in the DiT trainer). Everything that
         # USES a trained VAE — DiT training, sampling, evaluation,
         # measure_latents — prefers these weights when present
@@ -141,7 +149,7 @@ class VAETrainer:
             self.dataset = FolderClipDataset(
                 data_dir, height=self.cfg.height, width=self.cfg.width,
                 frames=self.cfg.frames, shard=data_shard,
-                manifest_name=manifest_name)
+                manifest_name=manifest_name, crop=crop, seed=seed)
             num_items = len(self.dataset)
         else:
             self.dataset = MovingMNISTDataset(
@@ -353,7 +361,7 @@ class VAETrainer:
             kwargs["cfg"] = VidgenConfig.from_dict(payload["config"])
         stored_tc = payload.get("train_config") or {}
         for key in ("warmup_steps", "lr_schedule", "total_steps",
-                    "grad_accum", "amp", "ema_decay"):
+                    "grad_accum", "amp", "ema_decay", "crop"):
             if kwargs.get(key) is None and key in stored_tc:
                 kwargs[key] = stored_tc[key]
         tr = cls(preset=payload["preset"], **kwargs)
@@ -440,6 +448,14 @@ def main() -> None:
                          "training, sampling and evaluation then use it "
                          "automatically. Default: off. On --resume the "
                          "stored value wins.")
+    ap.add_argument("--crop", type=int, default=None, metavar="N",
+                    help="train on random NxN spatial crops of the "
+                         "stored frames (real-clip --data-dir only): the "
+                         "VAE is fully convolutional, so the same weights "
+                         "still generate full-size frames. Use when the "
+                         "full frame does not fit in GPU memory. Default: "
+                         "off (full frames). On --resume the stored "
+                         "value wins.")
     ap.add_argument("--probe-every", type=int, default=0, metavar="N",
                     help="every N steps, measure the model on a FIXED probe "
                          "set (vidgen/probe.py) so you can see whether "
@@ -490,7 +506,7 @@ def main() -> None:
                 warmup_steps=args.warmup_steps,
                 lr_schedule=args.lr_schedule,
                 grad_accum=args.grad_accum, amp=args.amp,
-                ema_decay=args.ema_decay,
+                ema_decay=args.ema_decay, crop=args.crop,
                 dist_info=dist_info)
             if main_rank:
                 print(f"resumed from {args.resume} at step {tr.step}")
@@ -507,7 +523,7 @@ def main() -> None:
                             lr_schedule=args.lr_schedule,
                             total_steps=args.steps,
                             grad_accum=args.grad_accum, amp=args.amp,
-                            ema_decay=args.ema_decay,
+                            ema_decay=args.ema_decay, crop=args.crop,
                             dist_info=dist_info)
             if args.init_weights:
                 tr.load_vae_weights(args.init_weights,
