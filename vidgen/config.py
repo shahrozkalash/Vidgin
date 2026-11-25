@@ -255,15 +255,50 @@ def get_preset(name: str) -> VidgenConfig:
     return cfg.validate()
 
 
-def resolve_device(prefer: str = "auto") -> str:
-    """Device-agnostic resolution; vidgen never hardcodes a CUDA device call."""
-    if prefer == "auto":
-        try:
-            import torch
+AUTO_DEVICE_ORDER = ("cuda", "mps", "xpu")
 
-            if torch.cuda.is_available():
-                return "cuda"
-        except ImportError:
-            pass
+
+def _backend_available(name: str) -> bool:
+    """True when torch reports backend ``name`` usable on this machine.
+
+    Covers the backends PyTorch itself ships: CUDA (NVIDIA, and AMD via
+    ROCm builds, which also report as CUDA), MPS (Apple Silicon) and
+    XPU (Intel). Any probe error means "not available" — auto-detection
+    must never crash a run on an exotic torch build.
+    """
+    try:
+        import torch
+
+        if name == "cuda":
+            return bool(torch.cuda.is_available())
+        if name == "mps":
+            return bool(torch.backends.mps.is_available())
+        if name == "xpu":
+            xpu = getattr(torch, "xpu", None)
+            return bool(xpu is not None and xpu.is_available())
+    except Exception:
+        return False
+    return False
+
+
+def available_backends() -> tuple:
+    """Backends usable on this machine, in auto-detection priority order."""
+    return tuple(name for name in AUTO_DEVICE_ORDER if _backend_available(name))
+
+
+def resolve_device(prefer: str = "auto") -> str:
+    """Device-agnostic resolution; vidgen never hardcodes a CUDA device call.
+
+    ``"auto"`` picks the best accelerator this machine actually has —
+    CUDA first, then Apple MPS, then Intel XPU — and falls back to CPU,
+    so the same command trains on a Colab GPU, a Mac mini, a cheap Intel
+    box or a plain CPU machine. Any explicit device string (``"cuda"``,
+    ``"mps"``, ``"xpu"``, ``"xla"``, ``"cpu"``, ...) passes through
+    unchanged; the caller asked for it by name.
+    """
+    if prefer == "auto":
+        for name in AUTO_DEVICE_ORDER:
+            if _backend_available(name):
+                return name
         return "cpu"
     return prefer

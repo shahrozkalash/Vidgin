@@ -88,6 +88,33 @@ def make_grad_scaler(device, amp: str):
     return None
 
 
+def resolve_amp_for_device(device, amp: str | None) -> tuple:
+    """Map a requested AMP mode to one that is safe on ``device``.
+
+    Returns ``(effective_amp, warning)``; ``warning`` is None when the
+    request is honoured unchanged. Rules (portability patch, 2026-11-26):
+
+    * ``amp=None`` keeps the historical default: ``"none"`` everywhere.
+    * fp16 on MPS (Apple Silicon) is downgraded to ``"none"``: MPS has
+      no GradScaler and fp16 autocast there is the flaky path — fp32
+      always works, and a cheap machine that trains slowly beats one
+      that trains wrong. bf16 on MPS is honoured (PyTorch supports it).
+    * Everything else — CUDA fp16/bf16, CPU bf16, XPU, XLA — passes
+      through unchanged, so existing CUDA runs are bit-identical.
+    """
+    if amp is None:
+        return "none", None
+    if amp not in AMP_MODES:
+        raise ValueError(f"unknown amp mode {amp!r}; choose {AMP_MODES}")
+    dev_type = torch.device(str(device)).type
+    if dev_type == "mps" and amp == "fp16":
+        return "none", (
+            "amp=fp16 is not safe on MPS (no GradScaler, flaky autocast); "
+            "downgraded to amp=none for this run — pass amp=bf16 to use "
+            "mixed precision on Apple Silicon")
+    return amp, None
+
+
 def validate_train_options(grad_accum: int, amp: str) -> None:
     if grad_accum < 1:
         raise ValueError(f"grad_accum must be >= 1, got {grad_accum}")

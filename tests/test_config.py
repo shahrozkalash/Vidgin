@@ -92,7 +92,7 @@ def test_config_roundtrip(tmp_path):
 def test_device_agnostic_resolution():
     # no hardcoded device strings: vidgen must resolve device dynamically
     assert resolve_device("cpu") == "cpu"
-    assert resolve_device("auto") in ("cpu", "cuda")
+    assert resolve_device("auto") in ("cpu", "cuda", "mps", "xpu")
     import pathlib
 
     for f in pathlib.Path("vidgen").rglob("*.py"):

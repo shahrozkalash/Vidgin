@@ -51,7 +51,7 @@ from vidgen.seed import seed_everything
 from vidgen.train_utils import (
     ModelEMA, NonFiniteGuard, amp_context, build_lr_scheduler,
     guarded_optimizer_step, load_pooled_ema, make_grad_scaler,
-    oom_guidance, validate_train_options,
+    oom_guidance, resolve_amp_for_device, validate_train_options,
 )
 from vidgen.vae.model import CausalVAE, build_vae, vae_loss
 
@@ -104,7 +104,9 @@ class VAETrainer:
         # the historical behaviour; resolved options are recorded in
         # every checkpoint's train_config and restored on resume.
         self.grad_accum = 1 if grad_accum is None else int(grad_accum)
-        self.amp = "none" if amp is None else amp
+        self.amp, _amp_warn = resolve_amp_for_device(self.device, amp)
+        if _amp_warn:
+            print(f"[train] {_amp_warn}")
         validate_train_options(self.grad_accum, self.amp)
         self.warmup_steps = 0 if warmup_steps is None else int(warmup_steps)
         self.lr_schedule = "none" if lr_schedule is None else lr_schedule

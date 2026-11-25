@@ -18,6 +18,21 @@ from __future__ import annotations
 import torch
 
 
+def make_generator(device, seed: int) -> torch.Generator:
+    """A seeded generator for ``device``, with a CPU fallback.
+
+    Some backends cannot own a generator (XLA/TPU is the known case, and
+    exotic builds can refuse others). Sampling must still work there:
+    draw the noise with a CPU generator and move it onto the device —
+    the values differ from a native draw, but the seed stays honoured
+    and the run stays reproducible on that backend.
+    """
+    try:
+        return torch.Generator(device=device).manual_seed(seed)
+    except Exception:
+        return torch.Generator(device="cpu").manual_seed(seed)
+
+
 def _call_model(model, x, t_batch, text, text_mask, depth):
     # Pass depth ONLY when a map is supplied, so any model whose forward
     # predates depth conditioning keeps working untouched.
@@ -61,9 +76,12 @@ def sample_latents(model, latent_shape: tuple,
     if method not in ("euler", "midpoint", "rk4"):
         raise ValueError(f"Unknown sampler {method!r}")
     model.eval()
-    gen = torch.Generator(device=device).manual_seed(seed)
+    gen = make_generator(device, seed)
     b = latent_shape[0]
-    x = torch.randn(latent_shape, generator=gen, device=device)
+    # Draw on the generator's own device (CPU when the target backend
+    # cannot own a generator), then move onto the target device.
+    x = torch.randn(latent_shape, generator=gen,
+                    device=gen.device).to(device)
     if prefix_t:
         if prefix_latent is None:
             raise ValueError("prefix_t>0 requires prefix_latent")
